@@ -1,0 +1,5 @@
+-- Roblox: ReplicatedStorage.PlayerEvents.SquadGetState
+-- Class: RemoteFunction
+-- Type: remote metadata (no bytecode)
+
+{"Archivable":true,"fullName":"ReplicatedStorage.PlayerEvents.SquadGetState","className":"RemoteFunction","parent":"ReplicatedStorage.PlayerEvents","attributes":[],"children":[],"name":"SquadGetState"}

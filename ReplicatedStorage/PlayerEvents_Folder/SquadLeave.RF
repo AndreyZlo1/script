@@ -1,0 +1,5 @@
+-- Roblox: ReplicatedStorage.PlayerEvents.SquadLeave
+-- Class: RemoteFunction
+-- Type: remote metadata (no bytecode)
+
+{"Archivable":true,"fullName":"ReplicatedStorage.PlayerEvents.SquadLeave","className":"RemoteFunction","parent":"ReplicatedStorage.PlayerEvents","attributes":[],"children":[],"name":"SquadLeave"}

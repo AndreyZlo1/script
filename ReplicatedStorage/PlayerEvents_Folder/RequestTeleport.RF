@@ -1,0 +1,5 @@
+-- Roblox: ReplicatedStorage.PlayerEvents.RequestTeleport
+-- Class: RemoteFunction
+-- Type: remote metadata (no bytecode)
+
+{"Archivable":true,"fullName":"ReplicatedStorage.PlayerEvents.RequestTeleport","className":"RemoteFunction","parent":"ReplicatedStorage.PlayerEvents","attributes":[],"children":[],"name":"RequestTeleport"}

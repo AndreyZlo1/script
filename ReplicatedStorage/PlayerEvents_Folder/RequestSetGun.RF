@@ -1,0 +1,5 @@
+-- Roblox: ReplicatedStorage.PlayerEvents.RequestSetGun
+-- Class: RemoteFunction
+-- Type: remote metadata (no bytecode)
+
+{"Archivable":true,"fullName":"ReplicatedStorage.PlayerEvents.RequestSetGun","className":"RemoteFunction","parent":"ReplicatedStorage.PlayerEvents","attributes":[],"children":[],"name":"RequestSetGun"}

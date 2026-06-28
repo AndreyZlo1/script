@@ -1,0 +1,5 @@
+-- Roblox: ReplicatedStorage.PlayerEvents.RequestDeploy
+-- Class: RemoteFunction
+-- Type: remote metadata (no bytecode)
+
+{"Archivable":true,"fullName":"ReplicatedStorage.PlayerEvents.RequestDeploy","className":"RemoteFunction","parent":"ReplicatedStorage.PlayerEvents","attributes":[],"children":[],"name":"RequestDeploy"}
