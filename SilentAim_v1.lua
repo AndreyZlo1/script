@@ -1,45 +1,44 @@
 --[[
-    SilentAim v5 — ACS Engine (FastCastRedux)
-    Полная переработка на основе дампа GameDump
+    SilentAim v6 — ACS Engine (FastCastRedux)
+    GitHub: AndreyZlo1/script | коммит 7427939
 
-    АРХИТЕКТУРА ИЗ ДАМПА:
-    ─────────────────────────────────────────────────────────
-    ACS_Framework.lua line 1570-1571:
-      ShootModule.fire(LocalPlayer, origin, direction, shellData)   ← локальный FastCast
-      ServerBullet:FireServer(origin, direction, shellData)          ← серверная реплика
+    ═══════════════════════════════════════════════════════
+    АРХИТЕКТУРА (из дампа GameDump):
+    ═══════════════════════════════════════════════════════
 
-    Сервер получает FireServer и делает свой FastCast с теми же данными.
-    
-    ПОЧЕМУ v3/v4 НЕ РАБОТАЛИ:
-    ─────────────────────────────────────────────────────────
-    1. rawequal(self, ServerBulletRemote) — НЕНАДЁЖЕН.
-       Roblox instance caching: FindFirstChild может вернуть другой C++ proxy.
-       Нужен compareinstances() (Potassium) или проверка по имени/пути.
+    Выстрел (пешком):
+      ShootModule.fire(LocalPlayer, origin, dir, shellData)
+      ServerBullet:FireServer(origin, dir, shellData)
 
-    2. Ошибочная стратегия: мы патчили args внутри namecall, но
-       ShootModule.fire() вызывается ДО FireServer в том же frame.
-       Если hookfunction на ShootModule.fire — мы контролируем И локальный
-       FastCast И то что уходит на сервер через намкол.
+    Выстрел (танк):
+      ShootModule.fire(LocalPlayer, Dome.FollowPart.Position, Dome.LookVector, shellData)
+      ServerBullet:FireServer(origin, LookVector, shellData)
 
-    СТРАТЕГИЯ v5:
-    ─────────────────────────────────────────────────────────
-    Метод 1 (основной): hookfunction на ShootModule.fire через getgc/filtergc
-      - Перехватываем direction прямо в ShootModule.fire
-      - Это работает и для локального рендера И для сервера
-      - Не зависит от instance caching проблемы
+    Выстрел (вертолёт/самолёт):
+      ShootModule.fire(LocalPlayer, gun.Position, -gun.LookVector, shellData)
+      ServerBullet:FireServer(origin, LookVector, shellData)
 
-    Метод 2 (резервный): hookmetamethod с compareinstances + проверка по имени
-      - Используется если ShootModule недоступен через GC
-      - compareinstances() вместо rawequal() — работает корректно
+    Урон:
+      Damage:InvokeServer(shellData, humanoid, distance, hitType, hitPart, [penetrationIdx])
+      hitType: 1 = headshot, 2 = остальное
 
-    WallBang/BulletTP:
-    ─────────────────────────────────────────────────────────
-    НЕ через shellData таблицу (сервер может игнорировать клиентские значения).
-    Правильный способ: hookfunction на BulletHitDetector.canRayPierce
-      - canRayPierce вызывается в ShootModule для проверки пробития
-      - return true всегда = пуля проходит сквозь всё (WallBang)
-    BulletTP: через ShootModule.fire — shellSpeed в shellData это единственный путь,
-      НО патчим через upvalue самого ShootModule, не через аргументы.
+    WallBang:
+      BulletHitDetector.canRayPierce — проверяет u2 (hitboxes list)
+      Если часть тела — return false (стоп). НАШ FIX: return true только
+      для СТЕН (CanCollide=true, нет Humanoid), false для хитбоксов.
+
+    ForceHit:
+      Вызов Damage:InvokeServer напрямую с правильным shellData.
+
+    ═══════════════════════════════════════════════════════
+    ЧТО ИЗМЕНИЛОСЬ В v6:
+    ═══════════════════════════════════════════════════════
+    1. WallBang ИСПРАВЛЕН — пуля проходит только сквозь стены/объекты без Humanoid,
+       но ОСТАНАВЛИВАЕТСЯ на хитбоксах врагов (корректная логика)
+    2. ForceHit — прямой вызов Damage:InvokeServer по цели без физического полёта пули
+    3. Транспорт — hookShootModule охватывает ВСЕХ ShootModule.fire (танк/вертолёт/самолёт)
+    4. Поиск Remote безопаснее: cloneref + полный путь
+    5. BulletTP работает корректно — shellSpeed в самом ShootModule.fire
 ]]
 
 -- ============================================================
@@ -48,18 +47,20 @@
 local CONFIG = {
     Enabled      = true,
     FOV          = 300,
-    AimPart      = "Head",        -- "Head" | "HumanoidRootPart" | "UpperTorso"
+    AimPart      = "Head",         -- "Head" | "HumanoidRootPart" | "UpperTorso"
     TeamCheck    = true,
     PredictLead  = true,
-    LeadFactor   = 0.085,
+    LeadFactor   = 0.08,
 
-    BulletTP     = true,          -- мгновенный долёт (shellSpeed huge)
-    WallBang     = true,          -- сквозь стены (canRayPierce = true)
-    NoSpread     = true,          -- убрать разброс (direction точно в голову)
+    SilentAim    = true,           -- перенаправление direction → цель
+    BulletTP     = true,           -- shellSpeed = 9e9 (мгновенный долёт)
+    WallBang     = true,           -- пуля проходит сквозь стены, НО бьёт хитбоксы
+    ForceHit     = false,          -- прямой InvokeServer Damage без полёта пули (агрессивно)
 
     ShowFOV      = true,
     ShowLine     = true,
     ShowName     = true,
+    ShowHP       = true,
     ShowDistance = true,
     LineColor    = Color3.fromRGB(0, 255, 80),
     FOVColor     = Color3.fromRGB(255, 255, 255),
@@ -89,27 +90,41 @@ drawLine.Color = CONFIG.LineColor; drawLine.Transparency = 0.85
 
 local drawLineDot = Drawing.new("Circle")
 drawLineDot.Visible = false; drawLineDot.Radius = 5
-drawLineDot.Filled = true; drawLineDot.Color = CONFIG.LineColor
-drawLineDot.Transparency = 0.85
+drawLineDot.Filled = true; drawLineDot.Color = CONFIG.LineColor; drawLineDot.Transparency = 0.85
 
 local drawName = Drawing.new("Text")
 drawName.Visible = false; drawName.Size = 14
 drawName.Color = Color3.fromRGB(255,255,255)
-drawName.Outline = true; drawName.OutlineColor = Color3.fromRGB(0,0,0)
-drawName.Center = true
+drawName.Outline = true; drawName.OutlineColor = Color3.fromRGB(0,0,0); drawName.Center = true
+
+local drawHP = Drawing.new("Text")
+drawHP.Visible = false; drawHP.Size = 12
+drawHP.Color = Color3.fromRGB(150,255,150)
+drawHP.Outline = true; drawHP.OutlineColor = Color3.fromRGB(0,0,0); drawHP.Center = true
 
 local drawDist = Drawing.new("Text")
-drawDist.Visible = false; drawDist.Size = 12
+drawDist.Visible = false; drawDist.Size = 11
 drawDist.Color = Color3.fromRGB(200,200,200)
-drawDist.Outline = true; drawDist.OutlineColor = Color3.fromRGB(0,0,0)
-drawDist.Center = true
+drawDist.Outline = true; drawDist.OutlineColor = Color3.fromRGB(0,0,0); drawDist.Center = true
 
 -- ============================================================
---  КЕШ ЦЕЛИ (обновляется в RenderStepped)
+--  HITBOX-части из BulletHitDetector
+-- ============================================================
+local HITBOX_PARTS = {
+    Head=true, RootPart=true, UpperTorso=true, LowerTorso=true,
+    LeftFoot=true, LeftLowerLeg=true, LeftUpperLeg=true,
+    LeftHand=true, LeftLowerArm=true, LeftUpperArm=true,
+    RightFoot=true, RightLowerLeg=true, RughtUpperLeg=true,
+    RightHand=true, RightLowerArm=true, RightUpperArm=true
+}
+
+-- ============================================================
+--  КЕШ ЦЕЛИ
 -- ============================================================
 local cachedTarget    = nil
 local cachedTargetPos = nil
 local cachedDist      = 0
+local cachedHP        = 0
 
 local _rp = RaycastParams.new()
 _rp.FilterType = Enum.RaycastFilterType.Exclude
@@ -143,7 +158,7 @@ end
 local function updateCache()
     local center = screenCenter()
     local camPos = Camera.CFrame.Position
-    local bestPlayer, bestPos, bestDist, bestSD = nil, nil, 0, math.huge
+    local bestPlayer, bestPos, bestDist, bestSD, bestHP = nil, nil, 0, math.huge, 0
 
     for _, pl in ipairs(Players:GetPlayers()) do
         if pl == LocalPlayer then continue end
@@ -159,18 +174,21 @@ local function updateCache()
         if not vis then continue end
         local sd = (sp - center).Magnitude
         if sd > CONFIG.FOV then continue end
+        -- WallCheck только если WallBang выключен
         if not CONFIG.WallBang and hasWall(camPos, predPos, char) then continue end
         if sd < bestSD then
             bestSD = sd
             bestPlayer = pl
             bestPos = predPos
             bestDist = (predPos - camPos).Magnitude
+            bestHP = math.floor(hum.Health)
         end
     end
 
     cachedTarget    = bestPlayer
     cachedTargetPos = bestPos
     cachedDist      = bestDist
+    cachedHP        = bestHP
 end
 
 -- ============================================================
@@ -180,12 +198,11 @@ RunService.RenderStepped:Connect(function()
     if not CONFIG.Enabled then
         drawFOV.Visible = false; drawLine.Visible = false
         drawLineDot.Visible = false; drawName.Visible = false
-        drawDist.Visible = false; return
+        drawHP.Visible = false; drawDist.Visible = false; return
     end
     updateCache()
     local center = screenCenter()
-    drawFOV.Position = center
-    drawFOV.Visible = CONFIG.ShowFOV
+    drawFOV.Position = center; drawFOV.Visible = CONFIG.ShowFOV
     drawFOV.Radius = CONFIG.FOV
     drawFOV.Color = cachedTarget and CONFIG.LineColor or CONFIG.FOVColor
 
@@ -193,53 +210,138 @@ RunService.RenderStepped:Connect(function()
         local sp, vis = w2s(cachedTargetPos)
         drawLine.Visible = CONFIG.ShowLine and vis
         drawLine.From = center; drawLine.To = sp
-        drawLineDot.Visible = CONFIG.ShowLine and vis
-        drawLineDot.Position = sp
+        drawLineDot.Visible = CONFIG.ShowLine and vis; drawLineDot.Position = sp
         drawName.Visible = CONFIG.ShowName and vis
-        drawName.Position = Vector2.new(sp.X, sp.Y - 22)
+        drawName.Position = Vector2.new(sp.X, sp.Y - 24)
         drawName.Text = cachedTarget.Name
+        drawHP.Visible = CONFIG.ShowHP and vis
+        drawHP.Position = Vector2.new(sp.X, sp.Y - 12)
+        drawHP.Text = cachedHP .. " HP"
+        drawHP.Color = Color3.fromRGB(
+            math.floor(255 * (1 - cachedHP/100)),
+            math.floor(255 * (cachedHP/100)), 0)
         drawDist.Visible = CONFIG.ShowDistance and vis
-        drawDist.Position = Vector2.new(sp.X, sp.Y + 10)
+        drawDist.Position = Vector2.new(sp.X, sp.Y + 8)
         drawDist.Text = string.format("%.0fm", cachedDist)
     else
-        drawLine.Visible = false; drawLineDot.Visible = false
-        drawName.Visible = false; drawDist.Visible = false
+        drawLine.Visible=false; drawLineDot.Visible=false
+        drawName.Visible=false; drawHP.Visible=false; drawDist.Visible=false
     end
 end)
 
 -- ============================================================
---  МЕТОД 1: hookfunction на ShootModule.fire через GC
---  ShootModule.fire(player, origin, direction, shellData, extra?)
---  p9=origin, p10=direction, u11=shellData
+--  REMOTES — безопасный поиск
 -- ============================================================
-local function hookShootModule()
-    local ShootModule = nil
+local Remotes = {}
 
-    -- Ищем ShootModule через GC — ищем таблицу у которой есть функция fire
-    for _, obj in getgc(true) do
-        if type(obj) == "table"
-            and type(rawget(obj, "fire")) == "function"
-            and rawget(obj, "fire") ~= nil
-        then
-            -- Дополнительная проверка: fire принимает (player, origin V3, dir V3, shellData table)
-            local info = debug.getinfo(rawget(obj, "fire"))
-            if info and info.nups and info.nups >= 5 then
-                ShootModule = obj
-                break
-            end
-        end
+local function findRemotes()
+    local ok, rs = pcall(game.GetService, game, "ReplicatedStorage")
+    if not ok then return end
+
+    local function safe_wait(parent, name, timeout)
+        local ok2, result = pcall(function()
+            return parent:WaitForChild(name, timeout or 10)
+        end)
+        return ok2 and result or parent:FindFirstChild(name)
     end
 
-    if not ShootModule then
-        -- Запасной поиск через filtergc если доступен
-        local ok, results = pcall(filtergc, "table", {
-            Keys = {"fire"},
-            ValTypes = {"function"}
-        })
-        if ok and results then
-            for _, obj in ipairs(results) do
-                local info = debug.getinfo(rawget(obj, "fire"))
-                if info and info.nups and info.nups >= 5 then
+    local engine = safe_wait(rs, "ACS_Engine", 15)
+    if not engine then warn("[SA v6] ACS_Engine не найден"); return end
+
+    local events = safe_wait(engine, "Events", 10)
+    if not events then warn("[SA v6] Events не найден"); return end
+
+    -- cloneref если доступен (защита от instance caching)
+    local function cr(inst)
+        if inst and cloneref then return cloneref(inst) end
+        return inst
+    end
+
+    Remotes.ServerBullet = cr(events:FindFirstChild("ServerBullet"))
+    Remotes.Damage       = cr(events:FindFirstChild("Damage"))
+
+    if Remotes.ServerBullet then
+        print("[SA v6] ServerBullet:", Remotes.ServerBullet:GetFullName())
+    else
+        warn("[SA v6] ServerBullet не найден")
+    end
+    if Remotes.Damage then
+        print("[SA v6] Damage:", Remotes.Damage:GetFullName())
+    else
+        warn("[SA v6] Damage не найден")
+    end
+end
+
+task.spawn(findRemotes)
+
+-- ============================================================
+--  FORCE HIT — прямой вызов Damage:InvokeServer
+--  Сигнатура (из BulletHitDetector):
+--    Damage:InvokeServer(shellData, humanoid, distance, hitType, hitPart)
+--    hitType: 1=head, 2=body
+--  Создаём минимальный shellData с нужными полями
+-- ============================================================
+local function doForceHit(targetPlayer)
+    if not CONFIG.ForceHit then return end
+    if not Remotes.Damage then return end
+    if not targetPlayer or not targetPlayer.Character then return end
+    local char = targetPlayer.Character
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return end
+    local hitPart = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+    if not hitPart then return end
+    local lchar = LocalPlayer.Character
+    local origin = lchar and lchar:FindFirstChild("HumanoidRootPart")
+        and lchar.HumanoidRootPart.Position
+        or Camera.CFrame.Position
+
+    -- shellData с обязательными полями для сервера
+    local shellData = {
+        weaponName              = "G19X",       -- имя оружия в руках
+        shellType               = "Bullet",
+        shellName               = "9x19mm",
+        shellSpeed              = 9e9,
+        maxPenetrationCount     = 0,
+        currentPenetrationCount = 0,
+        penetrationMultiplier   = 0.8,
+        origin                  = origin,
+        bulletID                = LocalPlayer.Name .. LocalPlayer.UserId
+                                  .. tick() .. math.random(111,999),
+    }
+    -- Попытка взять имя текущего оружия
+    local tool = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Tool")
+    if tool then shellData.weaponName = tool.Name end
+
+    local dist = (hitPart.Position - origin).Magnitude
+    local ok, err = pcall(function()
+        Remotes.Damage:InvokeServer(shellData, hum, dist, 1, hitPart)  -- 1 = headshot
+    end)
+    if not ok and CONFIG.DebugLog then
+        warn("[SA v6] ForceHit error:", err)
+    elseif CONFIG.DebugLog then
+        print(string.format("[SA v6] ForceHit → %s | dist=%.0f", targetPlayer.Name, dist))
+    end
+end
+
+-- ============================================================
+--  HOOK ShootModule.fire — ОСНОВНОЙ
+--  Охватывает пешком + танк + вертолёт + самолёт (все используют ShootModule)
+--
+--  fire(player, origin, direction, shellData, extra?)
+-- ============================================================
+local ShootModuleHooked = false
+
+local function hookShootModule()
+    -- Ищем через GC все таблицы с полем fire (функция с >= 5 upvalues)
+    local ShootModule = nil
+    local gcList = getgc(true)
+    for i = 1, #gcList do
+        local obj = gcList[i]
+        if type(obj) == "table" then
+            local f = rawget(obj, "fire")
+            if type(f) == "function" then
+                local ok, info = pcall(debug.getinfo, f)
+                if ok and info and (info.nups or 0) >= 5 then
                     ShootModule = obj
                     break
                 end
@@ -247,199 +349,174 @@ local function hookShootModule()
         end
     end
 
+    -- Запасной — filtergc
     if not ShootModule then
-        warn("[SA v5] ShootModule не найден через GC, переключаемся на Метод 2")
+        local ok, res = pcall(filtergc, "table", {Keys={"fire"}, ValTypes={"function"}})
+        if ok and res then
+            for _, obj in ipairs(res) do
+                local f = rawget(obj, "fire")
+                if type(f) == "function" then
+                    local ok2, info = pcall(debug.getinfo, f)
+                    if ok2 and info and (info.nups or 0) >= 5 then
+                        ShootModule = obj; break
+                    end
+                end
+            end
+        end
+    end
+
+    if not ShootModule then
+        warn("[SA v6] ShootModule не найден в GC")
         return false
     end
 
-    print("[SA v5] ShootModule найден через GC, хукаем fire()")
-
     local origFire = ShootModule.fire
-    ShootModule.fire = newcclosure(function(player, origin, direction, shellData, extra)
-        -- Применяем только для LocalPlayer
-        if CONFIG.Enabled and player == LocalPlayer and cachedTargetPos then
+    print("[SA v6] ShootModule.fire найден, хукаем")
 
-            -- NoSpread / SilentAim: направление к цели
-            if CONFIG.NoSpread or true then  -- всегда направляем в цель когда SA включён
+    -- ── Hook canRayPierce для WallBang (ИСПРАВЛЕННЫЙ) ──────────────────
+    -- Из upvalues origFire ищем BulletHitDetector
+    local uvs = debug.getupvalues(origFire)
+    for _, val in pairs(uvs) do
+        if type(val) == "table" and type(rawget(val, "canRayPierce")) == "function" then
+            print("[SA v6] BulletHitDetector найден, хукаем canRayPierce")
+            local origPierce = val.canRayPierce
+            val.canRayPierce = newcclosure(function(player, instance, shellData)
+                if CONFIG.WallBang and player == LocalPlayer then
+                    -- Пропускаем только если это НЕ хитбокс (т.е. стена/объект)
+                    if instance and instance.Parent then
+                        local hasHumanoid = instance.Parent:FindFirstChildOfClass("Humanoid") ~= nil
+                        local isHitboxPart = HITBOX_PARTS[instance.Name] == true
+                        if hasHumanoid and isHitboxPart then
+                            -- Это хитбокс врага — НЕ пропускаем, пусть оригинал решает
+                            return origPierce(player, instance, shellData)
+                        end
+                        -- Стена / объект / аксессуар — пропускаем
+                        return true
+                    end
+                    return true
+                end
+                return origPierce(player, instance, shellData)
+            end, "ACS_canRayPierce")
+            print("[SA v6] WallBang: canRayPierce захукан (хитбоксы защищены)")
+            break
+        end
+    end
+
+    -- ── Hook ShootModule.fire ──────────────────────────────────────────
+    ShootModule.fire = newcclosure(function(player, origin, direction, shellData, extra)
+        if CONFIG.Enabled and player == LocalPlayer then
+
+            -- SilentAim: направление к цели
+            if CONFIG.SilentAim and cachedTargetPos then
                 local toTarget = cachedTargetPos - origin
                 if toTarget.Magnitude > 0 then
                     direction = toTarget.Unit
                 end
             end
 
-            -- BulletTP: огромная скорость пули в shellData
+            -- BulletTP: скорость пули
             if CONFIG.BulletTP and type(shellData) == "table" then
                 shellData.shellSpeed = 9e9
             end
 
+            -- ForceHit: после выстрела прямо говорим серверу о попадании
+            if CONFIG.ForceHit and cachedTarget then
+                task.defer(doForceHit, cachedTarget)
+            end
+
             if CONFIG.DebugLog then
-                print(string.format("[SA v5] FIRE hook → %s | dist=%.0f",
-                    cachedTarget and cachedTarget.Name or "?", cachedDist))
+                print(string.format("[SA v6] FIRE → %s | dist=%.0f | BTP=%s | WB=%s | FH=%s",
+                    cachedTarget and cachedTarget.Name or "none",
+                    cachedDist,
+                    tostring(CONFIG.BulletTP),
+                    tostring(CONFIG.WallBang),
+                    tostring(CONFIG.ForceHit)))
             end
         end
 
         return origFire(player, origin, direction, shellData, extra)
     end, "ACS_ShootModule_fire")
 
-    -- WallBang через canRayPierce в BulletHitDetector (upvalue ShootModule.fire)
-    -- Ищем BulletHitDetector через upvalues ShootModule.fire
-    if CONFIG.WallBang then
-        task.spawn(function()
-            -- Ищем BulletHitDetector в upvalues оригинального fire
-            local uvs = debug.getupvalues(origFire)
-            for name, val in pairs(uvs) do
-                if type(val) == "table" and type(rawget(val, "canRayPierce")) == "function" then
-                    print("[SA v5] BulletHitDetector найден через upvalue:", name)
-                    local origPierce = val.canRayPierce
-                    val.canRayPierce = newcclosure(function(player, instance, shellData)
-                        if CONFIG.WallBang and player == LocalPlayer then
-                            return true  -- пуля проходит сквозь всё
-                        end
-                        return origPierce(player, instance, shellData)
-                    end, "ACS_canRayPierce")
-                    print("[SA v5] WallBang: canRayPierce захукан")
-                    break
-                end
-            end
-        end)
-    end
-
+    ShootModuleHooked = true
     return true
 end
 
 -- ============================================================
---  МЕТОД 2: hookmetamethod (резервный) с compareinstances
+--  HOOK hookmetamethod — РЕЗЕРВНЫЙ
+--  Используется вместе с основным как второй слой
 -- ============================================================
 local function hookNamecall()
-    local ServerBulletRemote = nil
-
-    -- Ищем Remote — сначала FindFirstChild, потом WaitForChild
-    local function findRemote()
-        local ok, rs = pcall(game.GetService, game, "ReplicatedStorage")
-        if not ok then return nil end
-        local engine = rs:FindFirstChild("ACS_Engine")
-        if not engine then
-            local ok2, e = pcall(function() return rs:WaitForChild("ACS_Engine", 10) end)
-            if ok2 then engine = e end
-        end
-        if not engine then return nil end
-        local events = engine:FindFirstChild("Events")
-        if not events then
-            local ok3, e = pcall(function() return engine:WaitForChild("Events", 8) end)
-            if ok3 then events = e end
-        end
-        if not events then return nil end
-        return events:FindFirstChild("ServerBullet")
-    end
-
-    ServerBulletRemote = findRemote()
-    if ServerBulletRemote then
-        print("[SA v5] Fallback Remote OK:", ServerBulletRemote:GetFullName())
-    else
-        warn("[SA v5] Remote не найден при старте, жду...")
-        task.spawn(function()
-            task.wait(5)
-            ServerBulletRemote = findRemote()
-            if ServerBulletRemote then
-                print("[SA v5] Remote найден:", ServerBulletRemote:GetFullName())
-            else
-                warn("[SA v5] ServerBullet не найден: ReplicatedStorage.ACS_Engine.Events.ServerBullet")
-            end
-        end)
-    end
-
     local origNamecall
     origNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
         local method = getnamecallmethod()
 
-        if CONFIG.Enabled and method == "FireServer" and ServerBulletRemote and cachedTargetPos then
-            -- compareinstances — корректное сравнение instance proxy объектов
-            local isServerBullet = false
-            local ok, result = pcall(compareinstances, self, ServerBulletRemote)
-            if ok and result then
-                isServerBullet = true
+        -- ServerBullet:FireServer — перехват direction
+        if CONFIG.Enabled and method == "FireServer"
+            and Remotes.ServerBullet and cachedTargetPos
+        then
+            local isTarget = false
+            -- compareinstances (Potassium)
+            local ok, res = pcall(compareinstances, self, Remotes.ServerBullet)
+            if ok and res then
+                isTarget = true
             else
-                -- Запасная проверка по имени + пути
-                local ok2, name = pcall(function() return self.Name end)
-                if ok2 and name == "ServerBullet" then
-                    local ok3, parent = pcall(function() return self.Parent end)
-                    if ok3 and parent then
-                        local ok4, pname = pcall(function() return parent.Name end)
-                        if ok4 and pname == "Events" then
-                            isServerBullet = true
-                        end
-                    end
+                -- Fallback: проверка по имени + родителю
+                local ok2, nm = pcall(function() return self.Name end)
+                local ok3, pr = pcall(function() return self.Parent and self.Parent.Name end)
+                if ok2 and ok3 and nm == "ServerBullet" and pr == "Events" then
+                    isTarget = true
                 end
             end
 
-            if isServerBullet then
+            if isTarget then
                 local args = table.pack(...)
-                -- args: [1]=origin(V3), [2]=direction(V3), [3]=shellData(table)
-                -- Ищем Vector3 по типу — надёжнее чем по индексу
-                local originIdx, dirIdx
+                -- Ищем два Vector3 (origin, direction)
+                local oIdx, dIdx
                 for i = 1, args.n do
                     if typeof(args[i]) == "Vector3" then
-                        if not originIdx then originIdx = i
-                        elseif not dirIdx then dirIdx = i; break end
+                        if not oIdx then oIdx = i
+                        elseif not dIdx then dIdx = i; break end
                     end
                 end
-
-                if dirIdx then
-                    local origin = originIdx and args[originIdx] or Camera.CFrame.Position
-                    local toTarget = cachedTargetPos - origin
-                    if toTarget.Magnitude > 0 then
-                        args[dirIdx] = toTarget.Unit
-                    end
+                if dIdx then
+                    local origin = oIdx and args[oIdx] or Camera.CFrame.Position
+                    local toT = cachedTargetPos - origin
+                    if toT.Magnitude > 0 then args[dIdx] = toT.Unit end
                 end
-
-                -- BulletTP и WallBang через shellData (аргумент)
-                local shellData = args[3]
-                if type(shellData) == "table" then
-                    if CONFIG.BulletTP then
-                        shellData.shellSpeed = 9e9
-                    end
-                    if CONFIG.WallBang then
-                        shellData.maxPenetrationCount    = 99
-                        shellData.currentPenetrationCount = 0
-                        shellData.penetrationMultiplier  = 1.0
-                    end
+                -- shellData патч (аргумент после двух Vector3)
+                local sd = args[3]
+                if type(sd) == "table" then
+                    if CONFIG.BulletTP then sd.shellSpeed = 9e9 end
                 end
-
-                if CONFIG.DebugLog then
-                    print(string.format("[SA v5 fallback] FIRE → %s | dir patched=%s",
-                        cachedTarget and cachedTarget.Name or "?",
-                        tostring(dirIdx ~= nil)))
-                end
-
                 return origNamecall(self, table.unpack(args, 1, args.n))
             end
         end
 
         return origNamecall(self, ...)
     end))
-
-    print("[SA v5] hookmetamethod (fallback) активен")
+    print("[SA v6] hookmetamethod (fallback) активен")
 end
 
 -- ============================================================
---  ИНИЦИАЛИЗАЦИЯ — сначала пробуем hookfunction, потом namecall
+--  ИНИЦИАЛИЗАЦИЯ
 -- ============================================================
 task.spawn(function()
-    -- Небольшая задержка чтобы ShootModule успел загрузиться
-    task.wait(1)
-
-    local method1ok = hookShootModule()
-    -- Метод 2 всегда включаем как страховку
+    task.wait(1.5)  -- ждём загрузку ShootModule
+    local ok = hookShootModule()
     hookNamecall()
-
     print(string.format(
-        "[SilentAim v5] Готов | FOV=%d | AimPart=%s | ShootHook=%s | BTP=%s | WB=%s",
-        CONFIG.FOV, CONFIG.AimPart,
-        tostring(method1ok),
-        tostring(CONFIG.BulletTP),
-        tostring(CONFIG.WallBang)
+        "[SilentAim v6] Готов | ShootHook=%s | SA=%s | BTP=%s | WB=%s | FH=%s",
+        tostring(ok), tostring(CONFIG.SilentAim),
+        tostring(CONFIG.BulletTP), tostring(CONFIG.WallBang),
+        tostring(CONFIG.ForceHit)
     ))
-    print("[SA v5] Insert=toggle | Delete=BulletTP | End=WallBang | PageUp=FOV+ | PageDown=FOV-")
+    print("[SA v6] Клавиши:")
+    print("  Insert   = SA on/off")
+    print("  Delete   = BulletTP on/off")
+    print("  End      = WallBang on/off")
+    print("  Home     = ForceHit on/off (агрессивно!)")
+    print("  PageUp   = FOV +50")
+    print("  PageDown = FOV -50")
 end)
 
 -- ============================================================
@@ -447,28 +524,17 @@ end)
 -- ============================================================
 UserInputService.InputBegan:Connect(function(input, gpe)
     if gpe then return end
-    local function notify(title, text)
+    local function notify(t, m)
         pcall(function()
-            game:GetService("StarterGui"):SetCore("SendNotification",
-                {Title=title, Text=text, Duration=2})
+            game:GetService("StarterGui"):SetCore("SendNotification",{Title=t,Text=m,Duration=2})
         end)
     end
-    if input.KeyCode == Enum.KeyCode.Insert then
-        CONFIG.Enabled = not CONFIG.Enabled
-        notify("SilentAim v5", CONFIG.Enabled and "✓ ON" or "✗ OFF")
-    elseif input.KeyCode == Enum.KeyCode.Delete then
-        CONFIG.BulletTP = not CONFIG.BulletTP
-        notify("BulletTP", CONFIG.BulletTP and "✓ ON" or "✗ OFF")
-    elseif input.KeyCode == Enum.KeyCode.End then
-        CONFIG.WallBang = not CONFIG.WallBang
-        notify("WallBang", CONFIG.WallBang and "✓ ON" or "✗ OFF")
-    elseif input.KeyCode == Enum.KeyCode.PageUp then
-        CONFIG.FOV = math.min(CONFIG.FOV + 50, 800)
-        drawFOV.Radius = CONFIG.FOV
-        notify("FOV", "= " .. CONFIG.FOV)
-    elseif input.KeyCode == Enum.KeyCode.PageDown then
-        CONFIG.FOV = math.max(CONFIG.FOV - 50, 50)
-        drawFOV.Radius = CONFIG.FOV
-        notify("FOV", "= " .. CONFIG.FOV)
+    local k = input.KeyCode
+    if     k == Enum.KeyCode.Insert   then CONFIG.Enabled  = not CONFIG.Enabled;  notify("SilentAim v6", CONFIG.Enabled  and "✓ ON" or "✗ OFF")
+    elseif k == Enum.KeyCode.Delete   then CONFIG.BulletTP = not CONFIG.BulletTP; notify("BulletTP",  CONFIG.BulletTP and "✓ ON" or "✗ OFF")
+    elseif k == Enum.KeyCode.End      then CONFIG.WallBang = not CONFIG.WallBang; notify("WallBang",  CONFIG.WallBang and "✓ ON" or "✗ OFF")
+    elseif k == Enum.KeyCode.Home     then CONFIG.ForceHit = not CONFIG.ForceHit; notify("ForceHit",  CONFIG.ForceHit and "✓ ON (агрессивно)" or "✗ OFF")
+    elseif k == Enum.KeyCode.PageUp   then CONFIG.FOV = math.min(CONFIG.FOV+50,800); drawFOV.Radius=CONFIG.FOV; notify("FOV","= "..CONFIG.FOV)
+    elseif k == Enum.KeyCode.PageDown then CONFIG.FOV = math.max(CONFIG.FOV-50,50);  drawFOV.Radius=CONFIG.FOV; notify("FOV","= "..CONFIG.FOV)
     end
 end)
