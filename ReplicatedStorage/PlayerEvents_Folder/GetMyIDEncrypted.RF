@@ -1,0 +1,5 @@
+-- Roblox: ReplicatedStorage.PlayerEvents.GetMyIDEncrypted
+-- Class: RemoteFunction
+-- Type: remote metadata (no bytecode)
+
+{"Archivable":true,"fullName":"ReplicatedStorage.PlayerEvents.GetMyIDEncrypted","className":"RemoteFunction","parent":"ReplicatedStorage.PlayerEvents","attributes":[],"children":[],"name":"GetMyIDEncrypted"}

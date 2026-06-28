@@ -1,0 +1,5 @@
+-- Roblox: ReplicatedStorage.PlayerEvents.GetHasPromptedStarterPack
+-- Class: RemoteFunction
+-- Type: remote metadata (no bytecode)
+
+{"Archivable":true,"fullName":"ReplicatedStorage.PlayerEvents.GetHasPromptedStarterPack","className":"RemoteFunction","parent":"ReplicatedStorage.PlayerEvents","attributes":[],"children":[],"name":"GetHasPromptedStarterPack"}

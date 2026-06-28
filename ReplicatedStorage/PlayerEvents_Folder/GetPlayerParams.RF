@@ -1,0 +1,5 @@
+-- Roblox: ReplicatedStorage.PlayerEvents.GetPlayerParams
+-- Class: RemoteFunction
+-- Type: remote metadata (no bytecode)
+
+{"Archivable":true,"fullName":"ReplicatedStorage.PlayerEvents.GetPlayerParams","className":"RemoteFunction","parent":"ReplicatedStorage.PlayerEvents","attributes":[],"children":[],"name":"GetPlayerParams"}

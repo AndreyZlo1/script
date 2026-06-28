@@ -1,0 +1,5 @@
+-- Roblox: ReplicatedStorage.PlayerEvents.GetStarterPackExpiry
+-- Class: RemoteFunction
+-- Type: remote metadata (no bytecode)
+
+{"Archivable":true,"fullName":"ReplicatedStorage.PlayerEvents.GetStarterPackExpiry","className":"RemoteFunction","parent":"ReplicatedStorage.PlayerEvents","attributes":[],"children":[],"name":"GetStarterPackExpiry"}

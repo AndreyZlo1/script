@@ -1,0 +1,5 @@
+-- Roblox: ReplicatedStorage.PlayerEvents.RequestAttachmentEquip
+-- Class: RemoteFunction
+-- Type: remote metadata (no bytecode)
+
+{"Archivable":true,"fullName":"ReplicatedStorage.PlayerEvents.RequestAttachmentEquip","className":"RemoteFunction","parent":"ReplicatedStorage.PlayerEvents","attributes":[],"children":[],"name":"RequestAttachmentEquip"}

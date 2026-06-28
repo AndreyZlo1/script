@@ -1,0 +1,5 @@
+-- Roblox: ReplicatedStorage.PlayerEvents.GetWeaponForcedAttachments
+-- Class: RemoteFunction
+-- Type: remote metadata (no bytecode)
+
+{"Archivable":true,"fullName":"ReplicatedStorage.PlayerEvents.GetWeaponForcedAttachments","className":"RemoteFunction","parent":"ReplicatedStorage.PlayerEvents","attributes":[],"children":[],"name":"GetWeaponForcedAttachments"}

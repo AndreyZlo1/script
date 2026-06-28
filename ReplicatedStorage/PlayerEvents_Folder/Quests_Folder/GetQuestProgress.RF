@@ -1,0 +1,5 @@
+-- Roblox: ReplicatedStorage.PlayerEvents.Quests.GetQuestProgress
+-- Class: RemoteFunction
+-- Type: remote metadata (no bytecode)
+
+{"Archivable":true,"fullName":"ReplicatedStorage.PlayerEvents.Quests.GetQuestProgress","className":"RemoteFunction","parent":"ReplicatedStorage.PlayerEvents.Quests","attributes":[],"children":[],"name":"GetQuestProgress"}

@@ -1,0 +1,5 @@
+-- Roblox: ReplicatedStorage.PlayerEvents.RequestAttachmentPurchase
+-- Class: RemoteFunction
+-- Type: remote metadata (no bytecode)
+
+{"Archivable":true,"fullName":"ReplicatedStorage.PlayerEvents.RequestAttachmentPurchase","className":"RemoteFunction","parent":"ReplicatedStorage.PlayerEvents","attributes":[],"children":[],"name":"RequestAttachmentPurchase"}

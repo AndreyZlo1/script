@@ -1,0 +1,5 @@
+-- Roblox: ReplicatedStorage.PlayerEvents.RadarEvent
+-- Class: UnreliableRemoteEvent
+-- Type: remote metadata (no bytecode)
+
+{"Archivable":true,"fullName":"ReplicatedStorage.PlayerEvents.RadarEvent","className":"UnreliableRemoteEvent","parent":"ReplicatedStorage.PlayerEvents","attributes":[],"children":[],"name":"RadarEvent"}

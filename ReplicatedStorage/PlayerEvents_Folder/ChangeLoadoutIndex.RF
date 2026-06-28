@@ -1,0 +1,5 @@
+-- Roblox: ReplicatedStorage.PlayerEvents.ChangeLoadoutIndex
+-- Class: RemoteFunction
+-- Type: remote metadata (no bytecode)
+
+{"Archivable":true,"fullName":"ReplicatedStorage.PlayerEvents.ChangeLoadoutIndex","className":"RemoteFunction","parent":"ReplicatedStorage.PlayerEvents","attributes":[],"children":[],"name":"ChangeLoadoutIndex"}
