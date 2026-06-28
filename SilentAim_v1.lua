@@ -1,11 +1,15 @@
 --[[
-    SilentAim v2 — ACS Engine (FastCastRedux)
-    Исправления v1 → v2:
-      - Защита pcall внутри хука чтобы не ломать стрельбу при ошибке
-      - rawequal вместо == для сравнения RemoteEvent
-      - Автоопределение индексов args (origin=Vector3, direction=Vector3)
-      - Drawing: линия от центра экрана к цели + имя цели + FOV-круг
-      - Цвет линии: зелёный = цель в прицеле, красный = цель есть но не в прицеле
+    SilentAim v3 — ACS Engine (FastCastRedux)
+    
+    Исправления v2 → v3:
+      КРИТИЧЕСКИЙ ФИЧ: workspace:Raycast() НЕЛЬЗЯ вызывать внутри hookmetamethod-хука.
+      На большинстве экзплойтов (Fluxus, Delta, Arceus X, Electron) game и workspace
+      делят одну метатаблицу — рекурсивный __namecall вызов Raycast падает с ошибкой
+      "Raycast is not a valid member of RemoteEvent".
+      
+      Решение: findTarget() вызывается ТОЛЬКО из RenderStepped (вне хука).
+      Результат кешируется в currentTargetPos.
+      Хук только читает кеш — никаких сервисных вызовов внутри.
 ]]
 
 -- ============================================================
@@ -13,19 +17,16 @@
 -- ============================================================
 local CONFIG = {
     Enabled       = true,
-    FOV           = 250,           -- радиус поиска в пикселях от центра экрана
+    FOV           = 250,
     AimPart       = "Head",        -- "Head" | "HumanoidRootPart" | "UpperTorso"
     TeamCheck     = true,
     WallCheck     = true,
     PredictLead   = true,
     LeadFactor    = 0.085,
-
-    -- Drawing
-    ShowFOV       = true,          -- круг FOV
-    ShowLine      = true,          -- линия к цели
-    ShowName      = true,          -- имя цели над линией
-    LineColorLock = Color3.fromRGB(0, 255, 80),    -- цвет линии при захвате цели
-    LineColorIdle = Color3.fromRGB(255, 60, 60),   -- цвет линии без захвата
+    ShowFOV       = true,
+    ShowLine      = true,
+    ShowName      = true,
+    LineColorLock = Color3.fromRGB(0, 255, 80),
     FOVColor      = Color3.fromRGB(255, 255, 255),
 }
 
@@ -35,55 +36,48 @@ local CONFIG = {
 local Players          = game:GetService("Players")
 local RunService       = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-
 local LocalPlayer      = Players.LocalPlayer
 local Camera           = workspace.CurrentCamera
 
 -- ============================================================
---  DRAWING OBJECTS
+--  DRAWING
 -- ============================================================
 local drawFOV, drawLine, drawLineDot, drawName
 
-if CONFIG.ShowFOV then
-    drawFOV           = Drawing.new("Circle")
-    drawFOV.Visible   = false
-    drawFOV.Radius    = CONFIG.FOV
-    drawFOV.Color     = CONFIG.FOVColor
-    drawFOV.Thickness = 1
-    drawFOV.Filled    = false
-    drawFOV.Transparency = 0.6
-end
+drawFOV           = Drawing.new("Circle")
+drawFOV.Visible   = false
+drawFOV.Radius    = CONFIG.FOV
+drawFOV.Color     = CONFIG.FOVColor
+drawFOV.Thickness = 1
+drawFOV.Filled    = false
+drawFOV.Transparency = 0.55
 
-if CONFIG.ShowLine then
-    drawLine              = Drawing.new("Line")
-    drawLine.Visible      = false
-    drawLine.Thickness    = 1.5
-    drawLine.Transparency = 0.9
+drawLine           = Drawing.new("Line")
+drawLine.Visible   = false
+drawLine.Thickness = 1.5
+drawLine.Color     = CONFIG.LineColorLock
+drawLine.Transparency = 0.85
 
-    -- точка на цели (маленький круг)
-    drawLineDot           = Drawing.new("Circle")
-    drawLineDot.Visible   = false
-    drawLineDot.Radius    = 4
-    drawLineDot.Filled    = true
-    drawLineDot.Transparency = 0.9
-end
+drawLineDot           = Drawing.new("Circle")
+drawLineDot.Visible   = false
+drawLineDot.Radius    = 5
+drawLineDot.Filled    = true
+drawLineDot.Color     = CONFIG.LineColorLock
+drawLineDot.Transparency = 0.85
 
-if CONFIG.ShowName then
-    drawName              = Drawing.new("Text")
-    drawName.Visible      = false
-    drawName.Size         = 14
-    drawName.Color        = Color3.fromRGB(255, 255, 255)
-    drawName.Outline      = true
-    drawName.OutlineColor = Color3.fromRGB(0, 0, 0)
-    drawName.Center       = true
-end
+drawName              = Drawing.new("Text")
+drawName.Visible      = false
+drawName.Size         = 14
+drawName.Color        = Color3.fromRGB(255, 255, 255)
+drawName.Outline      = true
+drawName.OutlineColor = Color3.fromRGB(0, 0, 0)
+drawName.Center       = true
 
 -- ============================================================
---  ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+--  ВСПОМОГАТЕЛЬНЫЕ (только чистая математика — без сервисных вызовов)
 -- ============================================================
-local function getHitPart(character)
-    return character:FindFirstChild(CONFIG.AimPart)
-        or character:FindFirstChild("HumanoidRootPart")
+local function getHitPart(char)
+    return char:FindFirstChild(CONFIG.AimPart) or char:FindFirstChild("HumanoidRootPart")
 end
 
 local function isSameTeam(player)
@@ -91,46 +85,49 @@ local function isSameTeam(player)
     return LocalPlayer.Team ~= nil and LocalPlayer.Team == player.Team
 end
 
-local function hasWallBetween(origin, targetPos, character)
+-- Raycast-проверка стены — вызывается ТОЛЬКО из RenderStepped, НИКОГДА из хука
+local _rayParams = RaycastParams.new()
+_rayParams.FilterType = Enum.RaycastFilterType.Exclude
+local function hasWall(origin, targetPos, char)
     if not CONFIG.WallCheck then return false end
-    local rayParams = RaycastParams.new()
-    rayParams.FilterType = Enum.RaycastFilterType.Exclude
     local filter = {Camera}
     if LocalPlayer.Character then table.insert(filter, LocalPlayer.Character) end
-    table.insert(filter, character)
-    rayParams.FilterDescendantsInstances = filter
-    local result = workspace:Raycast(origin, targetPos - origin, rayParams)
+    table.insert(filter, char)
+    _rayParams.FilterDescendantsInstances = filter
+    local result = workspace:Raycast(origin, targetPos - origin, _rayParams)
     return result ~= nil
 end
 
 local function worldToScreen(pos)
-    local sp, onScreen = Camera:WorldToViewportPoint(pos)
-    return Vector2.new(sp.X, sp.Y), onScreen, sp.Z
+    local sp, vis = Camera:WorldToViewportPoint(pos)
+    return Vector2.new(sp.X, sp.Y), vis
 end
 
 local function screenCenter()
     return Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
 end
 
-local function predictedPosition(hitPart, shellSpeed)
+local function predictPos(hitPart, spd)
     local root = hitPart.Parent:FindFirstChild("HumanoidRootPart") or hitPart
     local vel  = root.AssemblyLinearVelocity
     if not CONFIG.PredictLead then return hitPart.Position end
     local dist   = (hitPart.Position - Camera.CFrame.Position).Magnitude
-    local travel = dist / math.max(shellSpeed, 1)
+    local travel = dist / math.max(spd, 1)
     return hitPart.Position + vel * travel * CONFIG.LeadFactor
 end
 
 -- ============================================================
---  ПОИСК ЦЕЛИ
+--  КЕШ ЦЕЛИ — обновляется из RenderStepped
+--  Хук ТОЛЬКО читает эти переменные, сам ничего не вычисляет
 -- ============================================================
-local currentTarget     = nil   -- Player
-local currentTargetPos  = nil   -- Vector3
+local cachedTarget    = nil   -- Player | nil
+local cachedTargetPos = nil   -- Vector3 | nil
+local cachedOriginPos = nil   -- Vector3 | nil (позиция камеры в момент кеша)
 
-local function findTarget(shellSpeed)
-    local bestPlayer  = nil
-    local bestDist    = math.huge
-    local bestPos     = nil
+local function updateTargetCache()
+    local center = screenCenter()
+    local origin = Camera.CFrame.Position
+    local bestPlayer, bestPos, bestDist = nil, nil, math.huge
 
     for _, player in ipairs(Players:GetPlayers()) do
         if player == LocalPlayer then continue end
@@ -139,15 +136,14 @@ local function findTarget(shellSpeed)
         if not char then continue end
         local hum = char:FindFirstChildOfClass("Humanoid")
         if not hum or hum.Health <= 0 then continue end
-        local hitPart = getHitPart(char)
-        if not hitPart then continue end
-        local predPos = predictedPosition(hitPart, shellSpeed or 1000)
-        local sp, onScreen = worldToScreen(predPos)
-        if not onScreen then continue end
-        local dist = (sp - screenCenter()).Magnitude
+        local part = getHitPart(char)
+        if not part then continue end
+        local predPos = predictPos(part, 1000)
+        local sp, vis = worldToScreen(predPos)
+        if not vis then continue end
+        local dist = (sp - center).Magnitude
         if dist > CONFIG.FOV then continue end
-        local origin = Camera.CFrame.Position
-        if hasWallBetween(origin, predPos, char) then continue end
+        if hasWall(origin, predPos, char) then continue end  -- Raycast вне хука — безопасно
         if dist < bestDist then
             bestDist   = dist
             bestPlayer = player
@@ -155,91 +151,91 @@ local function findTarget(shellSpeed)
         end
     end
 
-    return bestPlayer, bestPos
+    cachedTarget    = bestPlayer
+    cachedTargetPos = bestPos
+    cachedOriginPos = origin
 end
 
 -- ============================================================
---  DRAWING UPDATE LOOP
+--  RENDER LOOP — обновление кеша + Drawing
 -- ============================================================
 RunService.RenderStepped:Connect(function()
-    local center = screenCenter()
-
-    -- FOV круг
-    if drawFOV then
-        drawFOV.Position = center
-        drawFOV.Visible  = CONFIG.Enabled and CONFIG.ShowFOV
-        drawFOV.Radius   = CONFIG.FOV
-        drawFOV.Color    = CONFIG.FOVColor
+    if not CONFIG.Enabled then
+        drawFOV.Visible    = false
+        drawLine.Visible   = false
+        drawLineDot.Visible = false
+        drawName.Visible   = false
+        return
     end
 
-    -- Ищем ближайшую цель (для Drawing — не для выстрела, это отдельно)
-    local target, targetPos = findTarget(1000)
-    currentTarget    = target
-    currentTargetPos = targetPos
+    -- 1. Обновляем кеш (здесь можно делать Raycast)
+    updateTargetCache()
 
-    if target and targetPos then
-        local sp, onScreen = worldToScreen(targetPos)
+    local center = screenCenter()
 
-        -- Линия центр → цель
-        if drawLine then
-            drawLine.Visible  = CONFIG.Enabled and CONFIG.ShowLine and onScreen
-            drawLine.From     = center
-            drawLine.To       = sp
-            drawLine.Color    = CONFIG.LineColorLock
-            drawLine.Thickness = 1.5
-        end
+    -- 2. FOV круг
+    drawFOV.Position = center
+    drawFOV.Visible  = CONFIG.ShowFOV
+    drawFOV.Radius   = CONFIG.FOV
 
-        -- Точка на цели
-        if drawLineDot then
-            drawLineDot.Visible   = CONFIG.Enabled and CONFIG.ShowLine and onScreen
-            drawLineDot.Position  = sp
-            drawLineDot.Color     = CONFIG.LineColorLock
-        end
+    -- 3. Drawing линия / имя
+    if cachedTarget and cachedTargetPos then
+        local sp, vis = worldToScreen(cachedTargetPos)
 
-        -- Имя цели
-        if drawName then
-            drawName.Visible   = CONFIG.Enabled and CONFIG.ShowName and onScreen
-            drawName.Position  = Vector2.new(sp.X, sp.Y - 18)
-            drawName.Text      = target.Name
-        end
+        drawLine.Visible   = CONFIG.ShowLine and vis
+        drawLine.From      = center
+        drawLine.To        = sp
+        drawLine.Color     = CONFIG.LineColorLock
+
+        drawLineDot.Visible   = CONFIG.ShowLine and vis
+        drawLineDot.Position  = sp
+        drawLineDot.Color     = CONFIG.LineColorLock
+
+        drawName.Visible   = CONFIG.ShowName and vis
+        drawName.Position  = Vector2.new(sp.X, sp.Y - 20)
+        drawName.Text      = cachedTarget.Name
     else
-        -- Нет цели — скрываем
-        if drawLine    then drawLine.Visible    = false end
-        if drawLineDot then drawLineDot.Visible = false end
-        if drawName    then drawName.Visible    = false end
+        drawLine.Visible    = false
+        drawLineDot.Visible = false
+        drawName.Visible    = false
     end
 end)
 
 -- ============================================================
---  REMOTE HOOK
+--  REMOTE — находим ServerBullet
 -- ============================================================
-local function getServerBulletRemote()
+local ServerBulletRemote = nil
+
+local function findRemote()
     local rs = game:GetService("ReplicatedStorage")
-    local engine = rs:FindFirstChild("ACS_Engine") or rs:WaitForChild("ACS_Engine", 15)
+    local engine = rs:FindFirstChild("ACS_Engine")
+    if not engine then engine = rs:WaitForChild("ACS_Engine", 15) end
     if not engine then return nil end
-    local events = engine:FindFirstChild("Events") or engine:WaitForChild("Events", 10)
+    local events = engine:FindFirstChild("Events")
+    if not events then events = engine:WaitForChild("Events", 10) end
     if not events then return nil end
     return events:FindFirstChild("ServerBullet")
 end
 
-local ServerBulletRemote = getServerBulletRemote()
-
-if not ServerBulletRemote then
+ServerBulletRemote = findRemote()
+if ServerBulletRemote then
+    print("[SilentAim v3] Remote OK:", ServerBulletRemote:GetFullName())
+else
+    warn("[SilentAim v3] Remote не найден, жду...")
     task.spawn(function()
-        task.wait(5)
-        ServerBulletRemote = getServerBulletRemote()
+        task.wait(6)
+        ServerBulletRemote = findRemote()
         if ServerBulletRemote then
-            print("[SilentAim v2] Remote найден (отложенно):", ServerBulletRemote:GetFullName())
+            print("[SilentAim v3] Remote найден:", ServerBulletRemote:GetFullName())
         else
-            warn("[SilentAim v2] ServerBullet не найден! Путь: ReplicatedStorage.ACS_Engine.Events.ServerBullet")
+            warn("[SilentAim v3] ServerBullet не найден! Путь: ReplicatedStorage.ACS_Engine.Events.ServerBullet")
         end
     end)
-else
-    print("[SilentAim v2] Remote:", ServerBulletRemote:GetFullName())
 end
 
--- Хук: перехватываем FireServer на ServerBullet
--- Исправление v1: используем rawequal, pcall-защиту, автодетект индексов Vector3
+-- ============================================================
+--  HOOK — только читает кеш, никаких сервисных вызовов внутри
+-- ============================================================
 local originalNamecall
 originalNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
     local method = getnamecallmethod()
@@ -248,74 +244,50 @@ originalNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self,
         and method == "FireServer"
         and ServerBulletRemote
         and rawequal(self, ServerBulletRemote)
+        and cachedTargetPos  -- есть захваченная цель
     then
-        -- Безопасно копируем аргументы
-        local args = table.pack(...)  -- args.n = количество аргументов
+        local args = table.pack(...)
 
-        -- Автоопределение: ищем два Vector3 подряд (origin, direction)
-        -- Порядок: origin(Vector3), direction(Vector3), shellData(table)
-        local originIdx, dirIdx = nil, nil
+        -- Ищем два Vector3: origin (args[1]) и direction (args[2])
+        local originIdx, dirIdx
         for i = 1, args.n do
             if typeof(args[i]) == "Vector3" then
-                if not originIdx then
-                    originIdx = i
-                elseif not dirIdx then
-                    dirIdx = i
-                    break
-                end
+                if not originIdx then originIdx = i
+                elseif not dirIdx then dirIdx = i; break end
             end
         end
 
         if originIdx and dirIdx then
-            local origin    = args[originIdx]
-            local shellData = nil
-            -- shellData — первая таблица после dirIdx
-            for i = dirIdx + 1, args.n do
-                if type(args[i]) == "table" then
-                    shellData = args[i]
-                    break
-                end
-            end
-
-            local shellSpeed = shellData and shellData.shellSpeed or 1000
-            local _, targetPos = findTarget(shellSpeed)
-
-            if targetPos then
-                local newDir = (targetPos - origin).Unit
-                args[dirIdx] = newDir
+            -- ТОЛЬКО арифметика — никаких :Raycast(), :WaitForChild() и т.д.
+            local origin = args[originIdx]
+            local newDir = (cachedTargetPos - origin)
+            if newDir.Magnitude > 0 then
+                args[dirIdx] = newDir.Unit
             end
         end
 
-        -- Передаём обратно распакованные args
-        -- table.unpack с n чтобы не терять nil-аргументы
-        local ok, err = pcall(originalNamecall, self, table.unpack(args, 1, args.n))
-        if not ok then
-            warn("[SilentAim v2] hook pcall error:", err)
-            -- Фоллбэк — оригинальный вызов без изменений
-            return originalNamecall(self, ...)
-        end
-        return
+        -- Передаём изменённые аргументы
+        return originalNamecall(self, table.unpack(args, 1, args.n))
     end
 
     return originalNamecall(self, ...)
 end))
 
 -- ============================================================
---  KEYBIND: Insert = toggle
+--  KEYBIND: Insert
 -- ============================================================
 UserInputService.InputBegan:Connect(function(input, gpe)
     if gpe then return end
     if input.KeyCode == Enum.KeyCode.Insert then
         CONFIG.Enabled = not CONFIG.Enabled
-        if drawFOV    then drawFOV.Visible    = CONFIG.Enabled end
         game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title    = "SilentAim v2",
+            Title    = "SilentAim v3",
             Text     = CONFIG.Enabled and "✓ Включён" or "✗ Выключен",
             Duration = 2,
         })
-        print("[SilentAim v2] Enabled =", CONFIG.Enabled)
+        print("[SilentAim v3] Enabled =", CONFIG.Enabled)
     end
 end)
 
-print("[SilentAim v2] Загружен. Insert = toggle")
-print("[SilentAim v2] FOV:", CONFIG.FOV, "| AimPart:", CONFIG.AimPart, "| TeamCheck:", CONFIG.TeamCheck)
+print("[SilentAim v3] Загружен | Insert = toggle")
+print("  FOV:", CONFIG.FOV, "| AimPart:", CONFIG.AimPart, "| TeamCheck:", CONFIG.TeamCheck, "| WallCheck:", CONFIG.WallCheck)
