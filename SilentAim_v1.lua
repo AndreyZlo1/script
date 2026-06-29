@@ -1,9 +1,9 @@
 --[[
 ╔══════════════════════════════════════════════════════════════════╗
-║              SilentAim v11  --  ACS Engine (FastCastRedux)      ║
-║  GitHub: AndreyZlo1/script  |  base commit: 27e0da7             ║
+║              SilentAim v12  --  ACS Engine (FastCastRedux)      ║
+║  GitHub: AndreyZlo1/script  |  base commit: 627bb7f             ║
 ╠══════════════════════════════════════════════════════════════════╣
-║  FIXES v11:                                                      ║
+║  FIXES v12:                                                      ║
 ║  - ForceField ViewModel: ищет BasePart глубже + повтор при Equip ║
 ║  - BulletTracer: правильный Fade (1.0 → 0.0 = прозрачный),     ║
 ║    WorldToViewport каждый кадр (не застывает), живёт 0.5с        ║
@@ -88,6 +88,8 @@ local CFG = {
     ShowSwastika = true,
     ShowAimLine  = true,
     ShowTracer   = true,
+    ShowHitmarker = true,
+    HitSound      = true,
 
     TeamColor  = Color3.fromRGB(0,200,255),
     EnemyColor = Color3.fromRGB(255,60,60),
@@ -280,7 +282,7 @@ local function drawSkeleton(e, char, col)
         local sh,vh=w2s(hd.Position)
         if vh then
             local dist=(hd.Position-Camera.CFrame.Position).Magnitude
-            local r=math.clamp(3500/dist,3,12)
+            local r=math.clamp((dist > 0 and 14000/dist or 6), 2, 6)
             e.headCircle.Visible=true
             e.headCircle.Position=sh
             e.headCircle.Radius=r
@@ -317,7 +319,7 @@ end
 local swLines = {}
 for i=1,8 do
     swLines[i] = D("Line",{Visible=false,Thickness=2,
-        Color=Color3.fromRGB(255,0,0),Transparency=0})
+        Color=Color3.fromRGB(255,0,0),Transparency=0.15})
 end
 local swAngle = 0
 
@@ -343,8 +345,8 @@ local function drawSwastika(center, size, angle, col)
         local tail   = tip + cr * (size*0.55)
         local li1 = swLines[i*2-1]
         local li2 = swLines[i*2]
-        li1.Visible=true; li1.From=base; li1.To=tip; li1.Color=col
-        li2.Visible=true; li2.From=tip; li2.To=tail; li2.Color=col
+        li1.Visible=true; li1.From=base; li1.To=tip; li1.Color=col; li1.Thickness=2.4; li1.Transparency=0.1
+        li2.Visible=true; li2.From=tip; li2.To=tail; li2.Color=col; li2.Thickness=2.4; li2.Transparency=0.1
     end
 end
 
@@ -358,24 +360,62 @@ end
 local aimLine = D("Line",{Visible=false,Thickness=1.5,
     Color=Color3.fromRGB(255,255,255),Transparency=0.3})
 
-local function getMuzzleWorldPos()
-    local char=LocalPlayer.Character; if not char then return nil end
-    local tool=char:FindFirstChildOfClass("Tool"); if not tool then return nil end
-    -- Search all descendants for known muzzle attachments or parts
-    local function findInst(root, names)
-        for _,n in ipairs(names) do
-            local f=root:FindFirstChild(n,true)
-            if f then return f end
+
+local hitmarkerLines = {
+    D("Line",{Visible=false,Thickness=2,Color=Color3.fromRGB(255,255,255),Transparency=0}),
+    D("Line",{Visible=false,Thickness=2,Color=Color3.fromRGB(255,255,255),Transparency=0}),
+    D("Line",{Visible=false,Thickness=2,Color=Color3.fromRGB(255,255,255),Transparency=0}),
+    D("Line",{Visible=false,Thickness=2,Color=Color3.fromRGB(255,255,255),Transparency=0}),
+}
+local hitmarkerUntil = 0
+local hitSound = Instance.new("Sound")
+hitSound.Name = "SA_HitSound"
+hitSound.SoundId = "rbxassetid://115982072912004"
+hitSound.Volume = 1
+hitSound.RollOffMaxDistance = 50
+hitSound.Parent = workspace.CurrentCamera or workspace
+local function triggerHitFX()
+    hitmarkerUntil = tick() + 0.18
+    if CFG.HitSound then pcall(function() hitSound:Play() end) end
+end
+
+local function getCurrentViewmodelTool()
+    local cam = workspace:FindFirstChild("Camera") or workspace.CurrentCamera
+    local vm = cam and cam:FindFirstChild("Viewmodel")
+    if not vm then return nil end
+    for _,child in ipairs(vm:GetChildren()) do
+        if child:IsA("Model") then
+            return child
         end
-        return nil
     end
-    local att = findInst(tool, {"MuzzlePoint","Muzzle","muzzle","FirePoint","FiringPoint","TipAttachment","BarrelEnd"})
-    if att then
-        if att:IsA("Attachment") then return att.WorldPosition end
-        if att:IsA("BasePart")   then return att.Position + att.CFrame.LookVector*att.Size.Z*0.5 end
+    return nil
+end
+
+local function getMuzzleWorldPos()
+    -- Required path example from user: workspace.Camera.Viewmodel.G19X.Nodes.Muzzle
+    local cam = workspace:FindFirstChild("Camera") or workspace.CurrentCamera
+    local vmTool = getCurrentViewmodelTool()
+    if vmTool then
+        local nodes = vmTool:FindFirstChild("Nodes")
+        if nodes then
+            local muzzle = nodes:FindFirstChild("Muzzle") or nodes:FindFirstChild("MuzzlePoint") or nodes:FindFirstChild("FirePoint")
+            if muzzle then
+                if muzzle:IsA("Attachment") then return muzzle.WorldPosition end
+                if muzzle:IsA("BasePart") then return muzzle.Position end
+                local pp = muzzle:IsA("Model") and muzzle.PrimaryPart
+                if pp then return pp.Position end
+            end
+        end
+        local muzzleDeep = vmTool:FindFirstChild("Muzzle", true) or vmTool:FindFirstChild("MuzzlePoint", true) or vmTool:FindFirstChild("FirePoint", true)
+        if muzzleDeep then
+            if muzzleDeep:IsA("Attachment") then return muzzleDeep.WorldPosition end
+            if muzzleDeep:IsA("BasePart") then return muzzleDeep.Position end
+        end
+        local pp = vmTool.PrimaryPart
+        if pp then return pp.Position end
     end
-    -- fallback: righthand or camera
-    local rh = char:FindFirstChild("RightHand") or char:FindFirstChild("Right Arm")
+    local char=LocalPlayer.Character
+    local rh = char and (char:FindFirstChild("RightHand") or char:FindFirstChild("Right Arm"))
     return rh and rh.Position or Camera.CFrame.Position
 end
 
@@ -388,7 +428,7 @@ local TRACER_LIFE = 0.5
 local function spawnTracer(from3d, to3d)
     -- store 3D positions so we update via WorldToViewport every frame
     local l = D("Line",{Visible=true,Thickness=1.5,
-        Color=Color3.fromRGB(255,220,60),Transparency=0})
+        Color=Color3.fromRGB(255,220,60),Transparency=0.45})
     table.insert(tracers,{line=l, from3d=from3d, to3d=to3d, born=tick()})
 end
 
@@ -547,7 +587,7 @@ local function buildExploitUI()
     title.Size = UDim2.new(1,0,0,36)
     title.BackgroundColor3 = Color3.fromRGB(20,20,35)
     title.BorderSizePixel = 0
-    title.Text = "SilentAim v11  |  Exploit Panel"
+    title.Text = "SilentAim v12  |  Exploit Panel"
     title.TextColor3 = Color3.fromRGB(80,180,255)
     title.TextSize = 14
     title.Font = Enum.Font.GothamBold
@@ -930,27 +970,17 @@ end
 local ffApplied = false
 
 local function applyFFToTool(tool, enable)
-    if not tool then return end
-    for _,p in tool:GetDescendants() do
-        if p:IsA("BasePart") and not p:IsA("UnionOperation") then
+    local target = tool or getCurrentViewmodelTool()
+    if not target then return end
+    for _,p in target:GetDescendants() do
+        if p:IsA("BasePart") or p:IsA("UnionOperation") or p:IsA("MeshPart") then
             pcall(function()
                 if enable then
                     p.Material = Enum.Material.ForceField
                     p.Color    = Color3.fromRGB(30,180,220)
+                    p.Transparency = math.min(p.Transparency, 0.05)
                 else
                     p.Material = Enum.Material.SmoothPlastic
-                    p.Color    = Color3.fromRGB(163,162,165)
-                end
-            end)
-        end
-    end
-    -- also handle UnionOperations
-    for _,p in tool:GetDescendants() do
-        if p:IsA("UnionOperation") then
-            pcall(function()
-                if enable then
-                    p.Material = Enum.Material.ForceField
-                    p.Color    = Color3.fromRGB(30,180,220)
                 end
             end)
         end
@@ -965,14 +995,16 @@ task.spawn(function()
         local char=LocalPlayer.Character
         if not char then lastTool=nil; continue end
         local tool=char:FindFirstChildOfClass("Tool")
-        if tool~=lastTool then
-            lastTool=tool
-            if tool then
-                task.wait(0.15) -- wait for tool to fully load
+        local vmTool=getCurrentViewmodelTool()
+        local observed = vmTool or tool
+        if observed~=lastTool then
+            lastTool=observed
+            if observed then
+                task.wait(0.15) -- wait for model to fully load
                 refreshGunRefs()
                 if CFG.FullAuto and u7Ref then u7Ref.ShootRate=99999 end
                 if CFG.FireRate and u7Ref then u7Ref.ShootRate=CFG.FireRate end
-                if CFG.FFViewModel then applyFFToTool(tool,true) end
+                if CFG.FFViewModel then applyFFToTool(observed,true) end
             else
                 ffApplied=false
             end
@@ -1098,6 +1130,9 @@ local function hookShootModule()
                 local ep3d = cachedTargetPos or (origin+direction*500)
                 spawnTracer(mp3d, ep3d)
             end
+            if cachedTargetPos and CFG.ShowHitmarker then
+                task.delay(0.03, triggerHitFX)
+            end
             -- ForceHit
             if CFG.ForceHit and cachedTarget and R.Damage then
                 task.defer(function()
@@ -1109,6 +1144,7 @@ local function hookShootModule()
                         maxPenetrationCount=0,currentPenetrationCount=0,penetrationMultiplier=0.8,
                         origin=origin,bulletID=LocalPlayer.UserId..tick()..math.random(1,99999)}
                     pcall(function() R.Damage:InvokeServer(sd2,hum,(hp.Position-origin).Magnitude,1,hp) end)
+                    triggerHitFX()
                 end)
             end
         end
@@ -1206,9 +1242,11 @@ RunService.RenderStepped:Connect(function()
             local sp1,v1=w2s(tr.from3d); local sp2,v2=w2s(tr.to3d)
             if v1 then
                 tr.line.Visible=true
-                tr.line.From=sp1; tr.line.To=sp2
-                -- Transparency 0 = opaque, 1 = invisible
-                tr.line.Transparency=age/TRACER_LIFE
+                local t = age/TRACER_LIFE
+                local curTo = sp2:Lerp(sp1, t*0.35)
+                tr.line.From=sp1; tr.line.To=curTo
+                -- keep semi-transparent then animate only disappearance
+                tr.line.Transparency=0.45 + (age/TRACER_LIFE)*0.55
             else
                 tr.line.Visible=false
             end
@@ -1229,6 +1267,27 @@ RunService.RenderStepped:Connect(function()
         else aimLine.Visible=false end
     else aimLine.Visible=false end
 
+    -- HITMARKER (fade out only)
+    local hmNow = tick()
+    if CFG.ShowHitmarker and hmNow < hitmarkerUntil then
+        local c = screenCenter()
+        local alpha = (hitmarkerUntil - hmNow) / 0.18
+        local len = 8
+        local gap = 6
+        local segs = {
+            {c+Vector2.new(-gap-len,-gap-len), c+Vector2.new(-gap,-gap)},
+            {c+Vector2.new( gap, -gap),        c+Vector2.new( gap+len,-gap-len)},
+            {c+Vector2.new(-gap, gap),         c+Vector2.new(-gap-len, gap+len)},
+            {c+Vector2.new( gap, gap),         c+Vector2.new( gap+len, gap+len)},
+        }
+        for i=1,4 do
+            local l=hitmarkerLines[i]
+            l.Visible=true; l.From=segs[i][1]; l.To=segs[i][2]; l.Transparency=1-alpha*0.9
+        end
+    else
+        for i=1,4 do hitmarkerLines[i].Visible=false end
+    end
+
     if not upd then return end
 
     -- SWASTIKA around closest target
@@ -1236,7 +1295,7 @@ RunService.RenderStepped:Connect(function()
         local sp,vis=w2s(cachedTargetPos)
         if vis then
             local d=math.max(cachedDist,1)
-            local sz=math.clamp(2200/d, 20, 70)
+            local sz=math.clamp(9000/d, 28, 82)
             local col=hsvToRgb((tick()*0.6)%1,1,1)
             drawSwastika(sp, sz, swAngle, col)
         else hideSwastika() end
@@ -1338,7 +1397,7 @@ UserInputService.InputBegan:Connect(function(input,gpe)
     if gpe then return end
     local k=input.KeyCode
     if k==Enum.KeyCode.Insert then
-        CFG.Enabled=not CFG.Enabled; notify("SilentAim v11",CFG.Enabled and "ON" or "OFF")
+        CFG.Enabled=not CFG.Enabled; notify("SilentAim v12",CFG.Enabled and "ON" or "OFF")
     elseif k==Enum.KeyCode.Delete then
         CFG.BulletTP=not CFG.BulletTP; notify("BulletTP",CFG.BulletTP and "ON" or "OFF")
     elseif k==Enum.KeyCode.End then
@@ -1360,8 +1419,9 @@ UserInputService.InputBegan:Connect(function(input,gpe)
         notify("FullAuto",CFG.FullAuto and "ON" or "OFF")
     elseif k==Enum.KeyCode.F7 then
         CFG.FFViewModel=not CFG.FFViewModel
+        local vmTool = getCurrentViewmodelTool()
         local char=LocalPlayer.Character
-        local tool=char and char:FindFirstChildOfClass("Tool")
+        local tool=vmTool or (char and char:FindFirstChildOfClass("Tool"))
         applyFFToTool(tool, CFG.FFViewModel)
         notify("FF ViewModel",CFG.FFViewModel and "ON" or "OFF")
     elseif k==Enum.KeyCode.F8 then
@@ -1406,5 +1466,17 @@ task.spawn(function()
     task.wait(0.3)
     refreshGunRefs()
     print("[SA v11] Init complete")
-    notify("SilentAim v11","Loaded! RCtrl = Exploit UI")
+    notify("SilentAim v12","Loaded! RCtrl = Exploit UI")
 end)
+
+
+--[[
+ACS / VEHICLE NOTES (from remote dump, worth testing in-game):
+- ReplicatedStorage.RequestGroundVehicleEvent: possible free spawn / force spawn of ground vehicles.
+- ReplicatedStorage.RequestHelicopterEvent / RequestPlaneEvent: likely spawn or ownership request paths.
+- ReplicatedStorage.PlayerEvents.VehiclePersistence: may save/restore vehicle state without ownership checks.
+- ReplicatedStorage.ACS_Engine.Events.Turret / TurretHit / TurretEnter / TurretAngleChanged: likely hijack or damage vehicle turrets.
+- ReplicatedStorage.Helicopters.<name>.Networking.HitEvent / DamageEvent / RocketEvent: good candidates for enemy heli damage/explosion.
+- ReplicatedStorage.Planes.<name>.Networking.RocketEvent / CannonSound: plane weapon FX / potential desync abuse.
+- ReplicatedStorage.ACS_Engine.Events.ExplosionFX / TankFireFX / HeliRocketFireFX: visual-only or coupled explosion FX; inspect runtime args.
+]]
