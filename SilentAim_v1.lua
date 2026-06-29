@@ -1,16 +1,17 @@
 --[[
 ╔══════════════════════════════════════════════════════════════════╗
-║              SilentAim v12  --  ACS Engine (FastCastRedux)      ║
+║              SilentAim v13  --  ACS Engine (FastCastRedux)      ║
 ║  GitHub: AndreyZlo1/script  |  base commit: 627bb7f             ║
 ╠══════════════════════════════════════════════════════════════════╣
-║  FIXES v12:                                                      ║
-║  - ForceField ViewModel: ищет BasePart глубже + повтор при Equip ║
-║  - BulletTracer: правильный Fade (1.0 → 0.0 = прозрачный),     ║
-║    WorldToViewport каждый кадр (не застывает), живёт 0.5с        ║
-║  - Свастика: ИСПРАВЛЕНА, рисуется с правильным масштабом        ║
-║  - State: только ASCII (Drawing не поддерживает Unicode)        ║
-║  - AimLine: origin = WorldPosition Attachment MuzzlePoint/Muzzle ║
-║    в tool, fallback RightHand                                   ║
+║  FIXES v13:                                                      ║
+║  1. ESP vehicle fallback + depth check вместо vis               ║
+║  2. HeadCircle: depth check, работает за объектами              ║
+║  3. Свастика: уменьшена (3500/d, max 32px)                      ║
+║  4. HitSound: RollOff=0, re-parent при respawn                  ║
+║  5. InfAmmo: строгий фильтр, не трогает анимации ViewModel      ║
+║  6. BulletTracer: толще (3.5px), полная линия, правильный Fade  ║
+║  7. FullAuto: ShootType="Auto" для полуавтоматов                ║
+║  8. Viewmodel: пропуск Part "Chamber" в applyFF                 ║
 ║  - Head circle: радиус уменьшен (3500/dist, max 12)             ║
 ║  - FullAuto: рабочий через ShootRate без изменения ShootType    ║
 ║  - InfAmmo: зеркалит только bullets, не трогает ViewmodelAnims  ║
@@ -372,8 +373,15 @@ local hitSound = Instance.new("Sound")
 hitSound.Name = "SA_HitSound"
 hitSound.SoundId = "rbxassetid://115982072912004"
 hitSound.Volume = 1
-hitSound.RollOffMaxDistance = 50
+hitSound.RollOffMaxDistance = 0
+hitSound.RollOffMode = Enum.RollOffMode.InverseTapered
 hitSound.Parent = workspace.CurrentCamera or workspace
+-- FIX4: re-parent on respawn
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(0.5)
+    local cam = workspace.CurrentCamera or workspace
+    if hitSound.Parent ~= cam then hitSound.Parent = cam end
+end)
 local function triggerHitFX()
     hitmarkerUntil = tick() + 0.18
     if CFG.HitSound then pcall(function() hitSound:Play() end) end
@@ -426,9 +434,9 @@ local tracers = {}      -- { line, from3d, to3d, born }
 local TRACER_LIFE = 0.5
 
 local function spawnTracer(from3d, to3d)
-    -- store 3D positions so we update via WorldToViewport every frame
-    local l = D("Line",{Visible=true,Thickness=1.5,
-        Color=Color3.fromRGB(255,220,60),Transparency=0.45})
+    -- FIX6: thicker, starts fully visible
+    local l = D("Line",{Visible=true,Thickness=3.5,
+        Color=Color3.fromRGB(255,230,80),Transparency=0.0})
     table.insert(tracers,{line=l, from3d=from3d, to3d=to3d, born=tick()})
 end
 
@@ -458,7 +466,7 @@ local function updateCache()
         local part=char:FindFirstChild(CFG.AimPart) or char:FindFirstChild("HumanoidRootPart")
         if not part then continue end
         local pp=predictPos(part)
-        local sp,vis=w2s(pp); if not vis then continue end
+        local sp,vis,spZ=w2s(pp); if spZ<=0 then continue end
         local sd=(sp-center).Magnitude
         if sd>CFG.FOV then continue end
         if sd<bestDist then
@@ -537,7 +545,7 @@ task.spawn(function()
     R.PromptPass      = cr(rs:FindFirstChild("PromptPassPurchaseEvent"))
 
     local loaded={}; for k,v in R do if v then loaded[#loaded+1]=k end end
-    print("[SA v11] Remotes loaded: "..#loaded.." ("..table.concat(loaded,", ")..")")
+    print("[SA v13] Remotes loaded: "..#loaded.." ("..table.concat(loaded,", ")..")")
 end)
 
 -- ============================================================
@@ -587,7 +595,7 @@ local function buildExploitUI()
     title.Size = UDim2.new(1,0,0,36)
     title.BackgroundColor3 = Color3.fromRGB(20,20,35)
     title.BorderSizePixel = 0
-    title.Text = "SilentAim v12  |  Exploit Panel"
+    title.Text = "SilentAim v13  |  Exploit Panel"
     title.TextColor3 = Color3.fromRGB(80,180,255)
     title.TextSize = 14
     title.Font = Enum.Font.GothamBold
@@ -942,26 +950,28 @@ local function refreshGunRefs()
             break
         end
     end
-    -- InfAmmo: find ammo counter upvalues
-    -- FIXED: only hook functions that manage bullet counts, skip animation functions
-    -- detect by checking upvalue names for ammo-related identifiers
+    -- FIX5: InfAmmo - strict filter, skip animation/viewmodel functions
     for _,f in getgc(false) do
         if type(f)~="function" then continue end
         local ok,info=pcall(debug.getinfo,f)
         if not ok or not info then continue end
-        -- skip functions with too many upvalues (likely animation/physics)
+        -- FIX5: skip anim/viewmodel source files
+        local srcName = tostring(info.source or ""):lower()
+        if srcName:find("anim") or srcName:find("viewmodel") or srcName:find("motor") then continue end
         local nups=info.nups or 0
-        if nups==0 or nups>20 then continue end
+        if nups==0 or nups>15 then continue end
         local ok2,uvs=pcall(debug.getupvalues,f)
         if not ok2 then continue end
-        local hasMagCount=false; local hasTable=false
+        local hasMagCount=false; local hasTable=false; local hasAmmoKey=false
         for _,uv in pairs(uvs) do
             if type(uv)=="number" and uv>=0 and uv<=999 then hasMagCount=true end
             if type(uv)=="table" and rawget(uv,"ShootRate")~=nil then hasTable=true end
+            if type(uv)=="table" and (rawget(uv,"MagCapacity")~=nil
+                or rawget(uv,"AmmoInMag")~=nil or rawget(uv,"Ammo")~=nil) then hasAmmoKey=true end
         end
-        if hasMagCount and hasTable then infAmmoFns[#infAmmoFns+1]=f end
+        if hasTable and (hasMagCount or hasAmmoKey) then infAmmoFns[#infAmmoFns+1]=f end
     end
-    print(string.format("[SA v11] GunRefs: u7=%s InfFns=%d", tostring(u7Ref~=nil), #infAmmoFns))
+    print(string.format("[SA v13] GunRefs: u7=%s InfFns=%d", tostring(u7Ref~=nil), #infAmmoFns))
 end
 
 -- ============================================================
@@ -973,6 +983,7 @@ local function applyFFToTool(tool, enable)
     local target = tool or getCurrentViewmodelTool()
     if not target then return end
     for _,p in target:GetDescendants() do
+        if p.Name == "Chamber" then continue end  -- FIX8: skip chamber animation part
         if p:IsA("BasePart") or p:IsA("UnionOperation") or p:IsA("MeshPart") then
             pcall(function()
                 if enable then
@@ -1089,7 +1100,7 @@ local function hookShootModule()
         local ok,info=pcall(debug.getinfo,f)
         if ok and info and (info.nups or 0)>=5 then SM=obj; break end
     end
-    if not SM then warn("[SA v11] ShootModule not found"); return end
+    if not SM then warn("[SA v13] ShootModule not found"); return end
 
     -- WallBang hook
     local ok2,uvs=pcall(debug.getupvalues,SM.fire)
@@ -1150,7 +1161,7 @@ local function hookShootModule()
         end
         return origFire(pl,origin,direction,shellData,extra)
     end)
-    print("[SA v11] ShootModule hooked")
+    print("[SA v13] ShootModule hooked")
 end
 
 local function hookNamecall()
@@ -1178,7 +1189,7 @@ local function hookNamecall()
         end
         return origNC(self,...)
     end))
-    print("[SA v11] hookmetamethod OK")
+    print("[SA v13] hookmetamethod OK")
 end
 
 -- ============================================================
@@ -1206,7 +1217,7 @@ local function doKillAll()
         end)
         n=n+1
     end
-    print("[SA v11] KillAll -> "..n)
+    print("[SA v13] KillAll -> "..n)
 end
 
 -- ============================================================
@@ -1238,15 +1249,12 @@ RunService.RenderStepped:Connect(function()
         if age>TRACER_LIFE then
             tr.line:Remove(); table.remove(tracers,i)
         else
-            -- re-project 3D pos to screen every frame so it follows camera
-            local sp1,v1=w2s(tr.from3d); local sp2,v2=w2s(tr.to3d)
-            if v1 then
+            -- FIX6: full line, proper 0->1 fade
+            local sp1,v1,z1=w2s(tr.from3d); local sp2,v2,z2=w2s(tr.to3d)
+            if z1>0 and z2>0 then
                 tr.line.Visible=true
-                local t = age/TRACER_LIFE
-                local curTo = sp2:Lerp(sp1, t*0.35)
-                tr.line.From=sp1; tr.line.To=curTo
-                -- keep semi-transparent then animate only disappearance
-                tr.line.Transparency=0.45 + (age/TRACER_LIFE)*0.55
+                tr.line.From=sp1; tr.line.To=sp2
+                tr.line.Transparency = age/TRACER_LIFE
             else
                 tr.line.Visible=false
             end
@@ -1295,7 +1303,7 @@ RunService.RenderStepped:Connect(function()
         local sp,vis=w2s(cachedTargetPos)
         if vis then
             local d=math.max(cachedDist,1)
-            local sz=math.clamp(9000/d, 28, 82)
+            local sz=math.clamp(3500/d, 10, 32)
             local col=hsvToRgb((tick()*0.6)%1,1,1)
             drawSwastika(sp, sz, swAngle, col)
         else hideSwastika() end
@@ -1321,10 +1329,22 @@ RunService.RenderStepped:Connect(function()
               or char:FindFirstChild("RightFoot")
               or char:FindFirstChild("Left Leg")
 
+        -- FIX1: vehicle fallback
+        if not root then
+            for _,desc in workspace:GetDescendants() do
+                if desc:IsA("Seat") or desc:IsA("VehicleSeat") then
+                    local occ=desc.Occupant
+                    if occ and occ.Parent==char then
+                        root=char:FindFirstChild("HumanoidRootPart") or desc
+                        head=head or desc; break
+                    end
+                end
+            end
+        end
         if not root or not head then hideESP(e); continue end
 
-        local _,rootVis=w2s(root.Position)
-        if not rootVis then hideESP(e); continue end
+        local _rSP,_rVis,_rZ=w2s(root.Position)
+        if _rZ<=0 then hideESP(e); continue end
 
         local hp=math.clamp(math.floor(hum.Health),0,100)
         local col=isTeammate(pl) and CFG.TeamColor or CFG.EnemyColor
@@ -1397,7 +1417,7 @@ UserInputService.InputBegan:Connect(function(input,gpe)
     if gpe then return end
     local k=input.KeyCode
     if k==Enum.KeyCode.Insert then
-        CFG.Enabled=not CFG.Enabled; notify("SilentAim v12",CFG.Enabled and "ON" or "OFF")
+        CFG.Enabled=not CFG.Enabled; notify("SilentAim v13",CFG.Enabled and "ON" or "OFF")
     elseif k==Enum.KeyCode.Delete then
         CFG.BulletTP=not CFG.BulletTP; notify("BulletTP",CFG.BulletTP and "ON" or "OFF")
     elseif k==Enum.KeyCode.End then
@@ -1410,10 +1430,14 @@ UserInputService.InputBegan:Connect(function(input,gpe)
         CFG.FullAuto=not CFG.FullAuto
         if u7Ref then
             if CFG.FullAuto then
-                -- FullAuto: set ShootRate to very high, DO NOT change ShootType (breaks ViewModel)
+                -- FIX7: also force ShootType=Auto for semi-auto weapons
+                if not u7Ref._origShootType then u7Ref._origShootType = u7Ref.ShootType end
+                u7Ref.ShootType = "Auto"
                 u7Ref.ShootRate = 99999
             else
                 u7Ref.ShootRate = u7Ref._origShootRate or u7Ref.ShootRate
+                -- FIX7: restore ShootType
+                if u7Ref._origShootType then u7Ref.ShootType = u7Ref._origShootType end
             end
         end
         notify("FullAuto",CFG.FullAuto and "ON" or "OFF")
@@ -1465,8 +1489,8 @@ task.spawn(function()
     hookNamecall()
     task.wait(0.3)
     refreshGunRefs()
-    print("[SA v11] Init complete")
-    notify("SilentAim v12","Loaded! RCtrl = Exploit UI")
+    print("[SA v13] Init complete")
+    notify("SilentAim v13","Loaded! RCtrl = Exploit UI")
 end)
 
 
