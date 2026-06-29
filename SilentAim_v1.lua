@@ -1,9 +1,9 @@
 --[[
 ╔══════════════════════════════════════════════════════════════════╗
-║              SilentAim v14  --  ACS Engine (FastCastRedux)      ║
+║              SilentAim v15  --  ACS Engine (FastCastRedux)      ║
 ║  GitHub: AndreyZlo1/script                                       ║
 ╠══════════════════════════════════════════════════════════════════╣
-║  FIXES v14 (от v13/61896ce):                                     ║
+║  FIXES v15 (от v14/6b40bb8):  FPS CRITICAL FIX                  ║
 ║  1. FPS: ESP updateCache перенесён на Heartbeat с throttle       ║
 ║     RenderStepped только рисует, не итерирует GetPlayers()       ║
 ║  2. ESP players: ищем в workspace.ИмяИгрока (не ACS_WorkSpace)  ║
@@ -17,6 +17,17 @@
 ║  6. HeadCircle: max радиус уменьшен до 6px                       ║
 ║  7. HitSound: Volume=10, убрана конкуренция с игровым звуком     ║
 ║  8. HitMarker: рисуется на точке попадания (3D→2D), не по центру ║
+╠══════════════════════════════════════════════════════════════════╣
+║  FPSFIX (v15):                                                   ║
+║  A. getPlayerRoot: GetDescendants убран из hot path → _seatCache ║
+║  B. _seatCache пересчитывается раз в 2с (120 heartbeat)          ║
+║  C. updateCache throttle: каждые 3 Heartbeat (было 2)            ║
+║  D. KillAllSpam throttle: %30 (было %10)                         ║
+║  E. GrenadeSpam throttle: %20 (было %8)                          ║
+║  F. spawnTracer: w2s только при спавне, сохраняет 2D sp1/sp2     ║
+║  G. tracer render: убран w2s из цикла каждого кадра              ║
+║  H. drawESP: 30fps вместо 60fps (каждые 2 кадра)                 ║
+║  I. dStatus.Text: обновление раз в 10 кадров                     ║
 ╚══════════════════════════════════════════════════════════════════╝
 ]]
 
@@ -335,16 +346,20 @@ local TRACER_LIFE = 0.22
 local tracers = {}
 
 local function spawnTracer(from3d, to3d)
+    -- FPSFIX-G: конвертируем в 2D при спавне, не пересчитываем каждый кадр
+    local sp1,v1,z1 = w2s(from3d); if not v1 or z1<=0 then return end
+    local sp2,v2,z2 = w2s(to3d)
+    local ep = (v2 and z2>0) and sp2 or sp1
     local t = {}
-    t.from3d = from3d
-    t.to3d   = to3d
-    t.born   = tick()
-    -- FIX3: Drawing Transparency=0 → видимый (инверсия от BasePart!)
-    t.line   = D("Line",{
+    t.sp1  = sp1   -- 2D начало
+    t.sp2  = ep    -- 2D конец
+    t.born = tick()
+    t.line = D("Line",{
         Visible=true,
-        Thickness=1.5,       -- FIX3: тоньше
+        Thickness=1.5,
         Color=Color3.fromRGB(255,220,80),
-        Transparency=0.0,    -- FIX3: стартуем с 0 (полностью видим)
+        Transparency=0.0,
+        From=sp1, To=ep,
         ZIndex=5
     })
     tracers[#tracers+1]=t
@@ -434,6 +449,20 @@ end
 --  TARGET CACHE  (FIX2: ищем в workspace.PlayerName)
 -- ============================================================
 local playerDataCache = {}  -- per-player: {root, head, hum, char}
+local _seatCache = {}   -- FPSFIX-B: pl -> VehicleSeat (обновляется раз в 2с)
+local function rebuildSeatCache()
+    _seatCache = {}
+    for _,desc in workspace:GetDescendants() do
+        if desc:IsA("Seat") or desc:IsA("VehicleSeat") then
+            local occ = desc.Occupant
+            if occ then
+                local pl = Players:GetPlayerFromCharacter(occ.Parent)
+                if pl then _seatCache[pl] = desc end
+            end
+        end
+    end
+end
+
 
 local function getPlayerRoot(pl)
     -- FIX2: workspace.PlayerName содержит Character в этой игре
@@ -448,16 +477,11 @@ local function getPlayerRoot(pl)
     local head = char:FindFirstChild("Head")
     local hum  = char:FindFirstChildOfClass("Humanoid")
 
-    -- FIX2: vehicle fallback — если root не найден, ищем через seats
+    -- FPSFIX-A: vehicle fallback без GetDescendants (использует _seatCache)
     if not root then
-        for _,desc in workspace:GetDescendants() do
-            if (desc:IsA("Seat") or desc:IsA("VehicleSeat")) then
-                local occ = desc.Occupant
-                if occ and occ.Parent == char then
-                    root = char:FindFirstChild("HumanoidRootPart") or desc
-                    break
-                end
-            end
+        local cached = _seatCache[pl]
+        if cached and cached:IsDescendantOf(workspace) then
+            root = char:FindFirstChild("HumanoidRootPart") or cached
         end
     end
     return root, head, hum, char
@@ -654,9 +678,10 @@ end)
 local _hbFrame = 0
 RunService.Heartbeat:Connect(function()
     _hbFrame = _hbFrame + 1
+    if _hbFrame % 120 == 0 then rebuildSeatCache() end  -- FPSFIX-C
 
-    -- FIX1: обновляем цель каждые 2 heartbeat (не каждый кадр)
-    if _hbFrame % 2 == 0 then
+    -- updateCache каждые 3 Heartbeat (не каждый кадр)
+    if _hbFrame % 3 == 0 then  -- FPSFIX-D: каждые 3 тика
         updateCache()
     end
 
@@ -679,7 +704,7 @@ RunService.Heartbeat:Connect(function()
     end
 
     -- KillAllSpam
-    if CFG.KillAllSpam and R.Damage and _hbFrame%10==0 then
+    if CFG.KillAllSpam and R.Damage and _hbFrame%30==0 then  -- FPSFIX-E
         local myChar = LocalPlayer.Character
         local origin = myChar and myChar:FindFirstChild("HumanoidRootPart")
             and myChar.HumanoidRootPart.Position or Camera.CFrame.Position
@@ -698,7 +723,7 @@ RunService.Heartbeat:Connect(function()
     end
 
     -- GrenadeSpam
-    if CFG.GrenadeSpam and _hbFrame%8==0 then
+    if CFG.GrenadeSpam and _hbFrame%20==0 then  -- FPSFIX-F
         task.spawn(function()
             local char = LocalPlayer.Character
             if not char then return end
@@ -1278,7 +1303,8 @@ RunService.RenderStepped:Connect(function()
     _fc = _fc + 1
     swAngle = swAngle + 0.05
 
-    -- STATUS
+    -- FPSFIX-J: STATUS обновляем раз в 10 кадров
+    if _fc % 10 == 0 then
     local function b(v) return v and "ON" or "--" end
     dStatus.Text = string.format(
         "SA:%s BTP:%s WB:%s FH:%s IA:%s FA:%s FF:%s | KAS:%s GS:%s SP:%s",
@@ -1286,6 +1312,7 @@ RunService.RenderStepped:Connect(function()
         b(CFG.ForceHit), b(CFG.InfAmmo), b(CFG.FullAuto), b(CFG.FFViewModel),
         b(CFG.KillAllSpam), b(CFG.GrenadeSpam), b(CFG.SpotAll))
     dStatus.Color = CFG.Enabled and Color3.fromRGB(0,255,100) or Color3.fromRGB(255,80,80)
+    end  -- /FPSFIX-J status throttle
 
     -- FOV circle
     dFOV.Position = screenCenter(); dFOV.Radius = CFG.FOV
@@ -1300,17 +1327,9 @@ RunService.RenderStepped:Connect(function()
         if age > TRACER_LIFE then
             tr.line:Remove(); table.remove(tracers, i)
         else
-            local sp1,_,z1 = w2s(tr.from3d)
-            local sp2,_,z2 = w2s(tr.to3d)
-            if z1>0 and z2>0 then
-                tr.line.Visible = true
-                tr.line.From    = sp1
-                tr.line.To      = sp2
-                -- FIX3: 0 → 1 = от видимого к прозрачному
-                tr.line.Transparency = age / TRACER_LIFE
-            else
-                tr.line.Visible = false
-            end
+            -- FPSFIX-H: sp1/sp2 уже в 2D, не пересчитываем w2s каждый кадр
+            tr.line.Visible      = true
+            tr.line.Transparency = age / TRACER_LIFE
             i = i + 1
         end
     end
@@ -1374,10 +1393,10 @@ RunService.RenderStepped:Connect(function()
         else hideSwastika() end
     else hideSwastika() end
 
-    -- ESP (только рисование, данные уже обновлены в Heartbeat)
-    if CFG.ESPEnabled then
+    -- FPSFIX-I: ESP рисуем каждые 2 кадра (30fps достаточно для ESP)
+    if CFG.ESPEnabled and _fc % 2 == 0 then
         drawESP()
-    else
+    elseif not CFG.ESPEnabled then
         for _,e in espCache do hideESP(e) end
     end
 end)
