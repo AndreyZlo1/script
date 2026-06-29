@@ -1,6 +1,6 @@
 --[[
 ╔══════════════════════════════════════════════════════════════════╗
-║              SilentAim v12  --  ACS Engine (FastCastRedux)      ║
+║              SilentAim v13  --  ACS Engine (FastCastRedux)      ║
 ║  GitHub: AndreyZlo1/script  |  base commit: 627bb7f             ║
 ╠══════════════════════════════════════════════════════════════════╣
 ║  FIXES v12:                                                      ║
@@ -282,7 +282,7 @@ local function drawSkeleton(e, char, col)
         local sh,vh=w2s(hd.Position)
         if vh then
             local dist=(hd.Position-Camera.CFrame.Position).Magnitude
-            local r=math.clamp((dist > 0 and 14000/dist or 6), 2, 6)
+            local r=math.clamp((dist > 0 and 3500/dist or 4), 1.5, 8)
             e.headCircle.Visible=true
             e.headCircle.Position=sh
             e.headCircle.Radius=r
@@ -374,6 +374,21 @@ hitSound.SoundId = "rbxassetid://115982072912004"
 hitSound.Volume = 1
 hitSound.RollOffMaxDistance = 50
 hitSound.Parent = workspace.CurrentCamera or workspace
+
+-- FIX: пересоздаём hitSound после ресета (CharacterAdded убивает старый parent)
+local function rebuildHitSound()
+    pcall(function() hitSound:Destroy() end)
+    hitSound = Instance.new("Sound")
+    hitSound.Name = "SA_HitSound"
+    hitSound.SoundId = "rbxassetid://115982072912004"
+    hitSound.Volume = 1
+    hitSound.RollOffMaxDistance = 50
+    hitSound.Parent = workspace.CurrentCamera or workspace
+end
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(0.5) -- ждём загрузки камеры
+    rebuildHitSound()
+end)
 local function triggerHitFX()
     hitmarkerUntil = tick() + 0.18
     if CFG.HitSound then pcall(function() hitSound:Play() end) end
@@ -423,12 +438,12 @@ end
 --  BULLET TRACERS
 -- ============================================================
 local tracers = {}      -- { line, from3d, to3d, born }
-local TRACER_LIFE = 0.5
+local TRACER_LIFE = 0.8  -- FIX: увеличено с 0.5
 
 local function spawnTracer(from3d, to3d)
-    -- store 3D positions so we update via WorldToViewport every frame
-    local l = D("Line",{Visible=true,Thickness=1.5,
-        Color=Color3.fromRGB(255,220,60),Transparency=0.45})
+    -- FIX: увеличена толщина (2.5), TRACER_LIFE=0.8, начальная прозрачность=0.1 (яркий старт)
+    local l = D("Line",{Visible=true,Thickness=2.5,
+        Color=Color3.fromRGB(255,230,80),Transparency=0.1})
     table.insert(tracers,{line=l, from3d=from3d, to3d=to3d, born=tick()})
 end
 
@@ -587,7 +602,7 @@ local function buildExploitUI()
     title.Size = UDim2.new(1,0,0,36)
     title.BackgroundColor3 = Color3.fromRGB(20,20,35)
     title.BorderSizePixel = 0
-    title.Text = "SilentAim v12  |  Exploit Panel"
+    title.Text = "SilentAim v13  |  Exploit Panel"
     title.TextColor3 = Color3.fromRGB(80,180,255)
     title.TextSize = 14
     title.Font = Enum.Font.GothamBold
@@ -973,6 +988,8 @@ local function applyFFToTool(tool, enable)
     local target = tool or getCurrentViewmodelTool()
     if not target then return end
     for _,p in target:GetDescendants() do
+        -- FIX: игнорируем 'Chamber' (патронник — не должен менять материал)
+        if p.Name == "Chamber" then continue end
         if p:IsA("BasePart") or p:IsA("UnionOperation") or p:IsA("MeshPart") then
             pcall(function()
                 if enable then
@@ -1002,7 +1019,12 @@ task.spawn(function()
             if observed then
                 task.wait(0.15) -- wait for model to fully load
                 refreshGunRefs()
-                if CFG.FullAuto and u7Ref then u7Ref.ShootRate=99999 end
+                if CFG.FullAuto and u7Ref then
+                    if not u7Ref._origShootRate then u7Ref._origShootRate=u7Ref.ShootRate end
+                    if not u7Ref._origShootType then u7Ref._origShootType=u7Ref.ShootType end
+                    u7Ref.ShootRate=99999
+                    u7Ref.ShootType=3
+                end
                 if CFG.FireRate and u7Ref then u7Ref.ShootRate=CFG.FireRate end
                 if CFG.FFViewModel then applyFFToTool(observed,true) end
             else
@@ -1016,14 +1038,22 @@ end)
 --  HEARTBEAT
 -- ============================================================
 RunService.Heartbeat:Connect(function()
-    -- InfAmmo: only set bullet count values, don't touch animation upvalues
+    -- InfAmmo: FIXED — только bullet count upvalues в функциях связанных с ACS settings
     if CFG.InfAmmo then
         for _,f in infAmmoFns do
             local ok,uvs=pcall(debug.getupvalues,f)
             if not ok then continue end
+            -- проверяем что функция содержит ссылку на ACS settings (таблица с ShootRate)
+            local hasSettings=false
+            for _,uv in pairs(uvs) do
+                if type(uv)=="table" and rawget(uv,"ShootRate")~=nil then
+                    hasSettings=true; break
+                end
+            end
+            if not hasSettings then continue end
             for idx,val in pairs(uvs) do
-                -- only override values that look like mag/bullet counts (1-999)
-                if type(val)=="number" and val>=0 and val<=999 then
+                -- только маленькие числа (bullet/mag counts), не трогаем большие (angle/time)
+                if type(val)=="number" and val>=0 and val<=300 then
                     pcall(debug.setupvalue,f,idx,9999)
                 end
             end
@@ -1246,7 +1276,7 @@ RunService.RenderStepped:Connect(function()
                 local curTo = sp2:Lerp(sp1, t*0.35)
                 tr.line.From=sp1; tr.line.To=curTo
                 -- keep semi-transparent then animate only disappearance
-                tr.line.Transparency=0.45 + (age/TRACER_LIFE)*0.55
+                tr.line.Transparency=0.1 + (age/TRACER_LIFE)*0.9  -- FIX: Fade 0.1→1.0 (Drawing: 1=невидимый)
             else
                 tr.line.Visible=false
             end
@@ -1295,7 +1325,7 @@ RunService.RenderStepped:Connect(function()
         local sp,vis=w2s(cachedTargetPos)
         if vis then
             local d=math.max(cachedDist,1)
-            local sz=math.clamp(9000/d, 28, 82)
+            local sz=math.clamp(4500/d, 14, 40)
             local col=hsvToRgb((tick()*0.6)%1,1,1)
             drawSwastika(sp, sz, swAngle, col)
         else hideSwastika() end
@@ -1323,160 +1353,15 @@ RunService.RenderStepped:Connect(function()
 
         if not root or not head then hideESP(e); continue end
 
+        -- ESP FIX: проверяем видимость по head или root (люди в машинах имеют head видимым)
         local _,rootVis=w2s(root.Position)
-        if not rootVis then hideESP(e); continue end
-
-        local hp=math.clamp(math.floor(hum.Health),0,100)
-        local col=isTeammate(pl) and CFG.TeamColor or CFG.EnemyColor
-
-        -- Full-body bounding box: head top -> feet bottom
-        local headTop = head.Position + Vector3.new(0, head.Size.Y*0.5+0.1, 0)
-        local feetBot = lfoot
-            and (lfoot.Position - Vector3.new(0, lfoot.Size.Y*0.5, 0))
-            or  (root.Position  - Vector3.new(0, 3.2, 0))
-
-        local spHead,_ = w2s(headTop)
-        local spFeet,_ = w2s(feetBot)
-
-        local boxH = math.abs(spFeet.Y - spHead.Y)
-        if boxH < 5 then hideESP(e); continue end
-        local boxW = boxH * 0.42
-        local tl = Vector2.new(spHead.X - boxW, spHead.Y)
-        local br = Vector2.new(spHead.X + boxW, spFeet.Y)
-        local dist = math.floor((root.Position-Camera.CFrame.Position).Magnitude)
-
-        if CFG.ShowBox then
-            drawBox(e, tl, br, col)
-            if CFG.ShowHP then drawHPBar(e, tl, br, hp)
-            else e.hpBg.Visible=false; e.hpFill.Visible=false end
-
-            if CFG.ShowName then
-                e.name.Visible=true
-                e.name.Position=Vector2.new(spHead.X, tl.Y-15)
-                e.name.Text=pl.Name; e.name.Color=col
-            else e.name.Visible=false end
-
-            if CFG.ShowDist then
-                e.dist.Visible=true
-                e.dist.Position=Vector2.new(spHead.X, br.Y+3)
-                e.dist.Text=dist.."m"
-            else e.dist.Visible=false end
-
-            if CFG.ShowState then
-                local st=getPlayerState(char,hum)
-                if st~="" then
-                    e.state.Visible=true; e.state.Text=st
-                    e.state.Position=Vector2.new(spHead.X, br.Y+14)
-                else e.state.Visible=false end
-            else e.state.Visible=false end
-        else
-            for _,l in e.boxLines do l.Visible=false end
-            e.hpBg.Visible=false; e.hpFill.Visible=false
-            e.name.Visible=false; e.dist.Visible=false; e.state.Visible=false
+        local _,headVis=w2s(head.Position)
+        if not rootVis and not headVis then hideESP(e); continue end
+        -- Seat/vehicle check: SeatPart означает что игрок сидит
+        local seatPart = char:FindFirstChildOfClass("Humanoid") and hum.SeatPart
+        if seatPart then
+            -- игрок в транспорте — используем head position для ESP
+            local headSP, headV = w2s(head.Position)
+            if not headV then hideESP(e); continue end
         end
 
-        if CFG.ShowSkeleton and hp>0 then
-            drawSkeleton(e, char, col)
-        else
-            for _,l in e.skelLines do l.Visible=false end
-            e.headCircle.Visible=false
-        end
-    end
-end)
-
--- ============================================================
---  KEYBINDS
--- ============================================================
-local function notify(t,m)
-    pcall(function()
-        game:GetService("StarterGui"):SetCore("SendNotification",{Title=t,Text=m,Duration=2})
-    end)
-end
-
-UserInputService.InputBegan:Connect(function(input,gpe)
-    if gpe then return end
-    local k=input.KeyCode
-    if k==Enum.KeyCode.Insert then
-        CFG.Enabled=not CFG.Enabled; notify("SilentAim v12",CFG.Enabled and "ON" or "OFF")
-    elseif k==Enum.KeyCode.Delete then
-        CFG.BulletTP=not CFG.BulletTP; notify("BulletTP",CFG.BulletTP and "ON" or "OFF")
-    elseif k==Enum.KeyCode.End then
-        CFG.WallBang=not CFG.WallBang; notify("WallBang",CFG.WallBang and "ON" or "OFF")
-    elseif k==Enum.KeyCode.Home then
-        CFG.ForceHit=not CFG.ForceHit; notify("ForceHit",CFG.ForceHit and "ON" or "OFF")
-    elseif k==Enum.KeyCode.F5 then
-        CFG.InfAmmo=not CFG.InfAmmo; notify("InfAmmo",CFG.InfAmmo and "ON" or "OFF")
-    elseif k==Enum.KeyCode.F6 then
-        CFG.FullAuto=not CFG.FullAuto
-        if u7Ref then
-            if CFG.FullAuto then
-                -- FullAuto: set ShootRate to very high, DO NOT change ShootType (breaks ViewModel)
-                u7Ref.ShootRate = 99999
-            else
-                u7Ref.ShootRate = u7Ref._origShootRate or u7Ref.ShootRate
-            end
-        end
-        notify("FullAuto",CFG.FullAuto and "ON" or "OFF")
-    elseif k==Enum.KeyCode.F7 then
-        CFG.FFViewModel=not CFG.FFViewModel
-        local vmTool = getCurrentViewmodelTool()
-        local char=LocalPlayer.Character
-        local tool=vmTool or (char and char:FindFirstChildOfClass("Tool"))
-        applyFFToTool(tool, CFG.FFViewModel)
-        notify("FF ViewModel",CFG.FFViewModel and "ON" or "OFF")
-    elseif k==Enum.KeyCode.F8 then
-        CFG.ShowTracer=not CFG.ShowTracer; notify("BulletTracer",CFG.ShowTracer and "ON" or "OFF")
-    elseif k==Enum.KeyCode.F9 then
-        CFG.ShowAimLine=not CFG.ShowAimLine; notify("AimLine",CFG.ShowAimLine and "ON" or "OFF")
-    elseif k==Enum.KeyCode.F10 then
-        notify("KillAll","..."); task.spawn(doKillAll)
-    elseif k==Enum.KeyCode.F11 then
-        CFG.KillAllSpam=not CFG.KillAllSpam; notify("KillAllSpam",CFG.KillAllSpam and "ON" or "OFF")
-    elseif k==Enum.KeyCode.F12 then
-        CFG.SpotAll=not CFG.SpotAll; notify("SpotAll",CFG.SpotAll and "ON" or "OFF")
-    elseif k==Enum.KeyCode.KeypadZero then
-        CFG.GrenadeSpam=not CFG.GrenadeSpam; notify("GrenadeSpam",CFG.GrenadeSpam and "ON" or "OFF")
-    elseif k==Enum.KeyCode.KeypadOne then
-        local rs2=game:GetService("ReplicatedStorage")
-        local helis=rs2:FindFirstChild("Helicopters")
-        if helis then
-            for _,heli in helis:GetChildren() do
-                local net=heli:FindFirstChild("Networking")
-                local ce=net and net:FindFirstChild("CrashEvent")
-                if ce then pcall(function() ce:FireServer() end) end
-            end
-        end
-        notify("CrashAllHeli","sent")
-    elseif k==Enum.KeyCode.RightControl then
-        toggleUI()
-    elseif k==Enum.KeyCode.PageUp then
-        CFG.FOV=math.min(CFG.FOV+50,800); dFOV.Radius=CFG.FOV; notify("FOV","= "..CFG.FOV)
-    elseif k==Enum.KeyCode.PageDown then
-        CFG.FOV=math.max(CFG.FOV-50,50); dFOV.Radius=CFG.FOV; notify("FOV","= "..CFG.FOV)
-    end
-end)
-
--- ============================================================
---  INIT
--- ============================================================
-task.spawn(function()
-    task.wait(1.5)
-    hookShootModule()
-    hookNamecall()
-    task.wait(0.3)
-    refreshGunRefs()
-    print("[SA v11] Init complete")
-    notify("SilentAim v12","Loaded! RCtrl = Exploit UI")
-end)
-
-
---[[
-ACS / VEHICLE NOTES (from remote dump, worth testing in-game):
-- ReplicatedStorage.RequestGroundVehicleEvent: possible free spawn / force spawn of ground vehicles.
-- ReplicatedStorage.RequestHelicopterEvent / RequestPlaneEvent: likely spawn or ownership request paths.
-- ReplicatedStorage.PlayerEvents.VehiclePersistence: may save/restore vehicle state without ownership checks.
-- ReplicatedStorage.ACS_Engine.Events.Turret / TurretHit / TurretEnter / TurretAngleChanged: likely hijack or damage vehicle turrets.
-- ReplicatedStorage.Helicopters.<name>.Networking.HitEvent / DamageEvent / RocketEvent: good candidates for enemy heli damage/explosion.
-- ReplicatedStorage.Planes.<name>.Networking.RocketEvent / CannonSound: plane weapon FX / potential desync abuse.
-- ReplicatedStorage.ACS_Engine.Events.ExplosionFX / TankFireFX / HeliRocketFireFX: visual-only or coupled explosion FX; inspect runtime args.
-]]
