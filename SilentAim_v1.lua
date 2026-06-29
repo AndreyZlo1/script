@@ -1,9 +1,9 @@
 --[[
 ╔══════════════════════════════════════════════════════════════════╗
-║              SilentAim v15  --  ACS Engine (FastCastRedux)      ║
+║              SilentAim v16  --  ACS Engine (FastCastRedux)      ║
 ║  GitHub: AndreyZlo1/script                                       ║
 ╠══════════════════════════════════════════════════════════════════╣
-║  FIXES v15 (от v14/6b40bb8):  FPS CRITICAL FIX                  ║
+║  FIXES v16 (от v15/844304c):  ESP FPS FIX                       ║
 ║  1. FPS: ESP updateCache перенесён на Heartbeat с throttle       ║
 ║     RenderStepped только рисует, не итерирует GetPlayers()       ║
 ║  2. ESP players: ищем в workspace.ИмяИгрока (не ACS_WorkSpace)  ║
@@ -18,16 +18,12 @@
 ║  7. HitSound: Volume=10, убрана конкуренция с игровым звуком     ║
 ║  8. HitMarker: рисуется на точке попадания (3D→2D), не по центру ║
 ╠══════════════════════════════════════════════════════════════════╣
-║  FPSFIX (v15):                                                   ║
-║  A. getPlayerRoot: GetDescendants убран из hot path → _seatCache ║
-║  B. _seatCache пересчитывается раз в 2с (120 heartbeat)          ║
-║  C. updateCache throttle: каждые 3 Heartbeat (было 2)            ║
-║  D. KillAllSpam throttle: %30 (было %10)                         ║
-║  E. GrenadeSpam throttle: %20 (было %8)                          ║
-║  F. spawnTracer: w2s только при спавне, сохраняет 2D sp1/sp2     ║
-║  G. tracer render: убран w2s из цикла каждого кадра              ║
-║  H. drawESP: 30fps вместо 60fps (каждые 2 кадра)                 ║
-║  I. dStatus.Text: обновление раз в 10 кадров                     ║
+║  FPSFIX (v16):                                                   ║
+║  A-I: см. v15                                                    ║
+║  J. espDataCache: позиции костей кэшируются в Heartbeat          ║
+║     drawESP читает только кэш — нет FindFirstChild в render loop  ║
+║  K. getPlayerState: убран workspace:GetDescendants() → _seatCache║
+║  L. w2s(head/foot) считается 1 раз на игрока вместо 5x           ║
 ╚══════════════════════════════════════════════════════════════════╝
 ]]
 
@@ -138,17 +134,14 @@ local SKELETON_BONES = {
     {"LowerTorso","RightUpperLeg"},{"RightUpperLeg","RightLowerLeg"},{"RightLowerLeg","RightFoot"},
 }
 
-local function getPlayerState(char, hum)
+-- FPSFIX: getPlayerState принимает pl для _seatCache вместо GetDescendants
+local function getPlayerState(char, hum, pl)
     if not hum then return "" end
     if hum.Health<=0 then return "DEAD" end
     local st = hum:GetState()
     if st==Enum.HumanoidStateType.PlatformStanding then return "Vehicle" end
-    -- check occupant in any seat
-    for _,v in workspace:GetDescendants() do
-        if (v:IsA("Seat") or v:IsA("VehicleSeat")) and v.Occupant then
-            if v.Occupant.Parent == char then return "Vehicle" end
-        end
-    end
+    -- FPSFIX: используем _seatCache вместо workspace:GetDescendants()
+    if pl and _seatCache[pl] then return "Vehicle" end
     if char:GetAttribute("Prone")      then return "Prone"   end
     if char:GetAttribute("Crouching")  then return "Crouch"  end
     if char:GetAttribute("Crouch")     then return "Crouch"  end
@@ -228,6 +221,51 @@ end)
 --  ESP OBJECTS
 -- ============================================================
 local espCache = {}
+-- ── ESP DATA CACHE (FPSFIX: позиции костей кэшируются в Heartbeat, не в drawESP)
+local espDataCache = {}   -- pl → {headPos, rootPos, footPos, bones[], hp, maxhp, alive, dist, state, col}
+
+local function updateESPCache()
+    local myChar = LocalPlayer.Character
+    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    local myPos  = myRoot and myRoot.Position
+
+    for _,pl in ipairs(Players:GetPlayers()) do
+        if pl == LocalPlayer then continue end
+        local root,head,hum,char = getPlayerRoot(pl)
+        if not char or not hum then espDataCache[pl]=nil; continue end
+
+        local alive = hum.Health > 0
+        if not alive then
+            if espDataCache[pl] then espDataCache[pl].alive=false end
+            continue
+        end
+
+        local rootPos = root and root.Position or Vector3.zero
+        local headPos = head and head.Position or rootPos + Vector3.new(0,2.5,0)
+        local lfoot   = char:FindFirstChild("LeftFoot") or char:FindFirstChild("RightFoot")
+        local footPos = lfoot and lfoot.Position or rootPos - Vector3.new(0,3,0)
+
+        -- кости скелета
+        local bones = {}
+        for i,bone in ipairs(SKELETON_BONES) do
+            local p0 = char:FindFirstChild(bone[1])
+            local p1 = char:FindFirstChild(bone[2])
+            bones[i] = (p0 and p1) and {p0.Position, p1.Position} or nil
+        end
+
+        local dist = myPos and (myPos - rootPos).Magnitude or 999
+        local col  = isTeammate(pl) and CFG.TeamColor or CFG.EnemyColor
+        local state = getPlayerState(char, hum, pl)
+
+        espDataCache[pl] = {
+            headPos=headPos, rootPos=rootPos, footPos=footPos,
+            bones=bones, hp=hum.Health, maxhp=hum.MaxHealth,
+            alive=true, dist=dist, state=state,
+            col=col, name=pl.Name
+        }
+    end
+end
+
 
 local function makeESP()
     local e = {}
@@ -279,6 +317,7 @@ end
 -- Cleanup on player leave
 Players.PlayerRemoving:Connect(function(pl)
     if espCache[pl] then removeESP(espCache[pl]); espCache[pl]=nil end
+    espDataCache[pl] = nil  -- FPSFIX: чистим кэш данных
 end)
 
 -- ============================================================
@@ -683,6 +722,7 @@ RunService.Heartbeat:Connect(function()
     -- updateCache каждые 3 Heartbeat (не каждый кадр)
     if _hbFrame % 3 == 0 then  -- FPSFIX-D: каждые 3 тика
         updateCache()
+        if CFG.ESPEnabled then updateESPCache() end  -- FPSFIX: ESP данные в Heartbeat
     end
 
     -- FIX4: InfAmmo через upvalue u3 напрямую
@@ -1151,147 +1191,107 @@ end
 -- ============================================================
 --  ESP RENDER  (FIX1: только рисование, без итерации игроков)
 -- ============================================================
+-- FPSFIX: drawESP читает только espDataCache — нет FindFirstChild, нет getPlayerRoot
+-- Все тяжёлые операции вынесены в updateESPCache() (Heartbeat)
 local function drawESP()
     for _,pl in ipairs(Players:GetPlayers()) do
         if pl == LocalPlayer then continue end
         local e = getESP(pl)
+        local d = espDataCache[pl]
 
-        local root,head,hum,char = getPlayerRoot(pl)
-        if not char or not hum then hideESP(e); continue end
+        if not d or not d.alive then hideESP(e); continue end
 
-        local alive = hum.Health > 0
-        if not alive then hideESP(e); continue end
-
-        local lfoot = char:FindFirstChild("LeftFoot") or char:FindFirstChild("RightFoot")
-        if not root then hideESP(e); continue end
-
-        local col = isTeammate(pl) and CFG.TeamColor or CFG.EnemyColor
-        local headPos  = head and head.Position or root.Position + Vector3.new(0,2.5,0)
-        local rootPos  = root.Position
-        local footPos  = lfoot and lfoot.Position or rootPos - Vector3.new(0,3,0)
-
-        -- depth check
-        local _,_,spZ = w2s(rootPos)
+        -- depth check (единственный w2s для отсечения)
+        local _,_,spZ = w2s(d.rootPos)
         if spZ <= 0 then hideESP(e); continue end
 
-        local dist = cachedTarget==pl and cachedDist
-            or (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-                and (LocalPlayer.Character.HumanoidRootPart.Position - rootPos).Magnitude or 999)
+        local col     = d.col
+        local headPos = d.headPos
+        local footPos = d.footPos
+        local dist    = d.dist
 
-        -- HEAD CIRCLE (FIX6: radius clamped to 6 max)
-        if head and CFG.ShowSkeleton then
-            local hsp,hv,hz = w2s(headPos)
-            if hv and hz>0 then
-                local r = math.clamp(1400/math.max(dist,1), 2, 6)  -- FIX6: max=6
-                e.headCircle.Position = hsp
-                e.headCircle.Radius   = r
-                e.headCircle.Color    = col
-                e.headCircle.Visible  = true
-            else e.headCircle.Visible=false end
+        -- w2s для головы и ног (используется несколькими секциями — считаем один раз)
+        local hsp,hv,hz = w2s(headPos)
+        local fsp,fv,fz = w2s(footPos)
+
+        -- HEAD CIRCLE
+        if CFG.ShowSkeleton and hv and hz>0 then
+            local r = math.clamp(1400/math.max(dist,1), 2, 6)
+            e.headCircle.Position=hsp; e.headCircle.Radius=r
+            e.headCircle.Color=col; e.headCircle.Visible=true
         else e.headCircle.Visible=false end
 
-        -- SKELETON
+        -- SKELETON (берём позиции из кэша, без FindFirstChild)
         if CFG.ShowSkeleton then
-            for i, bone in ipairs(SKELETON_BONES) do
-                local p0 = char:FindFirstChild(bone[1])
-                local p1 = char:FindFirstChild(bone[2])
-                local l   = e.skelLines[i]
-                if p0 and p1 then
-                    local sp0,v0,z0 = w2s(p0.Position)
-                    local sp1,v1,z1 = w2s(p1.Position)
+            for i=1,#SKELETON_BONES do
+                local l = e.skelLines[i]
+                local b = d.bones[i]
+                if b then
+                    local sp0,v0,z0 = w2s(b[1])
+                    local sp1,v1,z1 = w2s(b[2])
                     if z0>0 and z1>0 then
-                        l.From=sp0; l.To=sp1; l.Color=col
-                        l.Visible=true
+                        l.From=sp0; l.To=sp1; l.Color=col; l.Visible=true
                     else l.Visible=false end
                 else l.Visible=false end
             end
-        else
-            for _,l in e.skelLines do l.Visible=false end
-        end
+        else for _,l in e.skelLines do l.Visible=false end end
 
-        -- BOX (2D corners from head+foot)
-        if CFG.ShowBox then
-            local hsp,_,hz = w2s(headPos)
-            local fsp,_,fz = w2s(footPos)
-            if hz>0 and fz>0 then
-                local height = math.abs(hsp.Y - fsp.Y)
-                local width  = height * 0.45
-                local cx     = (hsp.X + fsp.X)/2
-                local top    = math.min(hsp.Y, fsp.Y) - 4
-                local bot    = math.max(hsp.Y, fsp.Y) + 2
-                local left   = cx - width/2
-                local right  = cx + width/2
-                -- 4 sides as 8 half-corner lines
-                local corners = {
-                    {Vector2.new(left,top),  Vector2.new(left+width*0.25,top)},
-                    {Vector2.new(right-width*0.25,top), Vector2.new(right,top)},
-                    {Vector2.new(left,bot),  Vector2.new(left+width*0.25,bot)},
-                    {Vector2.new(right-width*0.25,bot), Vector2.new(right,bot)},
-                    {Vector2.new(left,top),  Vector2.new(left,top+(bot-top)*0.25)},
-                    {Vector2.new(left,bot-(bot-top)*0.25), Vector2.new(left,bot)},
-                    {Vector2.new(right,top), Vector2.new(right,top+(bot-top)*0.25)},
-                    {Vector2.new(right,bot-(bot-top)*0.25),Vector2.new(right,bot)},
-                }
-                for i,seg in ipairs(corners) do
-                    e.boxLines[i].From=seg[1]; e.boxLines[i].To=seg[2]
-                    e.boxLines[i].Color=col; e.boxLines[i].Visible=true
-                end
-            else for _,l in e.boxLines do l.Visible=false end end
+        -- BOX
+        if CFG.ShowBox and hz>0 and fz>0 then
+            local height = math.abs(hsp.Y - fsp.Y)
+            local width  = height * 0.45
+            local cx     = (hsp.X + fsp.X)/2
+            local top    = math.min(hsp.Y,fsp.Y) - 4
+            local bot    = math.max(hsp.Y,fsp.Y) + 2
+            local left   = cx - width/2; local right = cx + width/2
+            local corners = {
+                {Vector2.new(left,top),  Vector2.new(left+width*0.25,top)},
+                {Vector2.new(right-width*0.25,top), Vector2.new(right,top)},
+                {Vector2.new(left,bot),  Vector2.new(left+width*0.25,bot)},
+                {Vector2.new(right-width*0.25,bot), Vector2.new(right,bot)},
+                {Vector2.new(left,top),  Vector2.new(left,top+(bot-top)*0.25)},
+                {Vector2.new(left,bot-(bot-top)*0.25), Vector2.new(left,bot)},
+                {Vector2.new(right,top), Vector2.new(right,top+(bot-top)*0.25)},
+                {Vector2.new(right,bot-(bot-top)*0.25),Vector2.new(right,bot)},
+            }
+            for i,seg in ipairs(corners) do
+                e.boxLines[i].From=seg[1]; e.boxLines[i].To=seg[2]
+                e.boxLines[i].Color=col; e.boxLines[i].Visible=true
+            end
         else for _,l in e.boxLines do l.Visible=false end end
 
         -- HP BAR
-        if CFG.ShowHP then
-            local hsp,_,hz = w2s(headPos)
-            local fsp,_,fz = w2s(footPos)
-            if hz>0 and fz>0 then
-                local height = math.abs(hsp.Y - fsp.Y)
-                local width  = height*0.45
-                local cx     = (hsp.X+fsp.X)/2
-                local top    = math.min(hsp.Y,fsp.Y)-4
-                local bot    = math.max(hsp.Y,fsp.Y)+2
-                local bx     = cx - width/2 - 6
-                local hp     = math.clamp(hum.Health/hum.MaxHealth,0,1)
-                local hpTop  = top + (bot-top)*(1-hp)
-                e.hpBg.From  = Vector2.new(bx,top)
-                e.hpBg.To    = Vector2.new(bx,bot)
-                e.hpBg.Visible=true
-                e.hpFill.From= Vector2.new(bx,hpTop)
-                e.hpFill.To  = Vector2.new(bx,bot)
-                local hpR    = math.floor((1-hp)*255)
-                local hpG    = math.floor(hp*255)
-                e.hpFill.Color=Color3.fromRGB(hpR,hpG,30)
-                e.hpFill.Visible=true
-            else e.hpBg.Visible=false; e.hpFill.Visible=false end
+        if CFG.ShowHP and hz>0 and fz>0 then
+            local height = math.abs(hsp.Y - fsp.Y)
+            local width  = height*0.45
+            local cx     = (hsp.X+fsp.X)/2
+            local top    = math.min(hsp.Y,fsp.Y)-4
+            local bot    = math.max(hsp.Y,fsp.Y)+2
+            local bx     = cx - width/2 - 6
+            local hp     = math.clamp(d.hp/math.max(d.maxhp,1), 0, 1)
+            local hpTop  = top + (bot-top)*(1-hp)
+            e.hpBg.From=Vector2.new(bx,top); e.hpBg.To=Vector2.new(bx,bot); e.hpBg.Visible=true
+            e.hpFill.From=Vector2.new(bx,hpTop); e.hpFill.To=Vector2.new(bx,bot)
+            e.hpFill.Color=Color3.fromRGB(math.floor((1-hp)*255),math.floor(hp*255),30)
+            e.hpFill.Visible=true
         else e.hpBg.Visible=false; e.hpFill.Visible=false end
 
         -- NAME
-        if CFG.ShowName then
-            local hsp,_,hz = w2s(headPos)
-            if hz>0 then
-                e.name.Text=pl.Name; e.name.Color=col
-                e.name.Position=hsp+Vector2.new(0,-16); e.name.Visible=true
-            else e.name.Visible=false end
+        if CFG.ShowName and hv and hz>0 then
+            e.name.Text=d.name; e.name.Color=col
+            e.name.Position=hsp+Vector2.new(0,-16); e.name.Visible=true
         else e.name.Visible=false end
 
         -- DIST
-        if CFG.ShowDist then
-            local fsp,_,fz = w2s(footPos)
-            if fz>0 then
-                e.dist.Text=string.format("%dm",math.floor(dist))
-                e.dist.Position=fsp+Vector2.new(0,4); e.dist.Visible=true
-            else e.dist.Visible=false end
+        if CFG.ShowDist and fv and fz>0 then
+            e.dist.Text=string.format("%dm",math.floor(dist))
+            e.dist.Position=fsp+Vector2.new(0,4); e.dist.Visible=true
         else e.dist.Visible=false end
 
         -- STATE
-        if CFG.ShowState then
-            local state = getPlayerState(char, hum)
-            if state~="" then
-                local fsp,_,fz = w2s(footPos)
-                if fz>0 then
-                    e.state.Text=state
-                    e.state.Position=fsp+Vector2.new(0,16); e.state.Visible=true
-                else e.state.Visible=false end
-            else e.state.Visible=false end
+        if CFG.ShowState and d.state~="" and fv and fz>0 then
+            e.state.Text=d.state
+            e.state.Position=fsp+Vector2.new(0,16); e.state.Visible=true
         else e.state.Visible=false end
     end
 end
