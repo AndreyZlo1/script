@@ -1,95 +1,165 @@
 --[[
 ╔══════════════════════════════════════════════════════════════════╗
-║                    SilentAim v2  (dump-audited)                  ║
+║              SilentAim v13  --  ACS Engine                      ║
+║  GitHub: AndreyZlo1/script  |  base commit: 4280d27             ║
 ╠══════════════════════════════════════════════════════════════════╣
-║  Fixes vs v1:                                                    ║
-║  1. ESP: nil<=number crash fixed (rootZ guard), vehicle seats    ║
-║  2. Head Circle: clamp(1400/dist,2,8)px – correct distance scale ║
-║  3. Swastika: clamp(4000/dist,18,46)px – smaller at distance     ║
-║  4. HitSound: re-attached on CharacterAdded+delay(1)             ║
-║  5. FullAuto: only sets ShootType=3 via FireModes check,         ║
-║     also forces ShootType to 3 when Auto=false (unlocks mode)    ║
-║     InfAmmo: skip upvalues that touch AnimTrack/CFrame/Vector3   ║
-║  6. BulletTracer: real 3D→screen, thick visible line,            ║
-║     Fade = Transparency 0→1 over TRACER_LIFE(0.7s) + tail shrink ║
-║  7. Viewmodel: Chamber part ignored in FF apply                   ║
-║  8. ExploitUI: built from dump audit (real remote paths/args)    ║
+║  FIXES v13:                                                      ║
+║  1. ESP: no dist limit, vehicle riders detected via Seat tag     ║
+║  2. Head Circle: clamp(1200/dist, 2, 5)  -- tiny at range       ║
+║  3. Swastika: clamp(3500/dist, 22, 50)  -- smaller              ║
+║  4. HitSound: parented fresh every respawn via CharAdded         ║
+║  5. FullAuto: only modifies ShootRate, never ShootType           ║
+║     InfAmmo: patched per-upvalue check to SKIP non-ammo nums    ║
+║     Neither touches ViewModel anims                              ║
+║  6. BulletTracer: full screen-space 3D, starts at Muzzle,       ║
+║     proper Fade OUT only (alpha 0.3 -> 1.0 over 0.5s),         ║
+║     thickness 2.5, length spans to target                       ║
+║  7. ForceField: skip 'Chamber' named parts                       ║
+║  8. ExploitUI: troll/damage only:                               ║
+║     CrashAllHeli, DamageVehicles, CollapseAll, SVFlash,         ║
+║     GrenadeSpam, ExplosionFX spam, TurretHijack,               ║
+║     HeadRotSpam, Surrender all, Drag, StopGrappling,            ║
+║     CollectCash, Breach walls                                    ║
 ╠══════════════════════════════════════════════════════════════════╣
-║  Keybinds:                                                       ║
-║  RightAlt  = SilentAim on/off                                    ║
-║  F2        = TeamCheck toggle                                    ║
-║  F3        = ESP toggle                                          ║
-║  F4        = ForceField Viewmodel toggle                         ║
-║  F5        = InfAmmo on/off                                      ║
-║  F6        = FullAuto on/off                                     ║
-║  F7        = ShowAimLine toggle                                   ║
-║  F8        = BulletTracer on/off                                 ║
-║  RCtrl     = ExploitUI toggle                                    ║
+║  BINDS:                                                         ║
+║  Insert   = SilentAim on/off                                    ║
+║  Delete   = BulletTP on/off                                     ║
+║  End      = WallBang on/off                                     ║
+║  Home     = ForceHit on/off                                     ║
+║  F5       = InfAmmo on/off                                      ║
+║  F6       = FullAuto on/off                                      ║
+║  F7       = ForceField ViewModel on/off                         ║
+║  F8       = BulletTracer on/off                                 ║
+║  F9       = AimLine on/off                                      ║
+║  F10      = KillAll (once)                                      ║
+║  F11      = KillAll spam toggle                                  ║
+║  F12      = SpotAll toggle                                       ║
+║  Numpad0  = GrenadeSpam toggle                                   ║
+║  Numpad1  = CrashAllHeli (once)                                  ║
+║  RCtrl    = Exploit UI toggle                                    ║
+║  PgUp/Dn  = FOV +/-50                                            ║
 ╚══════════════════════════════════════════════════════════════════╝
 ]]
 
 -- ================================================================
--- SERVICES & LOCALS
+-- SERVICES
 -- ================================================================
-local Players      = game:GetService("Players")
-local RunService   = game:GetService("RunService")
-local UserInputSvc = game:GetService("UserInputService")
-local TweenSvc     = game:GetService("TweenService")
-local LocalPlayer  = Players.LocalPlayer
-local Camera       = workspace.CurrentCamera
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer      = Players.LocalPlayer
+local Camera           = workspace.CurrentCamera
 
 -- ================================================================
--- CONFIGURATION
+-- CONFIG
 -- ================================================================
 local CFG = {
-    Enabled      = true,
-    TeamCheck    = true,
-    ESP          = true,
-    ShowAimLine  = false,
-    FFViewModel  = false,
-    InfAmmo      = false,
-    FullAuto     = false,
-    BulletTracer = true,
-    FOV          = 120,
-    SmoothFactor = 0.18,
-    HeadCircleR  = 6,   -- base px (scaled by distance below)
-    HitSoundId   = "rbxassetid://9120394449",
+    Enabled       = true,
+    FOV           = 300,
+    AimPart       = "Head",
+    TeamCheck     = true,
+    PredictLead   = true,
+    LeadFactor    = 0.08,
+
+    SilentAim  = true,
+    BulletTP   = true,
+    WallBang   = true,
+    ForceHit   = false,
+
+    InfAmmo    = false,
+    FullAuto   = false,
+
+    ESPEnabled    = true,
+    ShowBox       = true,
+    ShowSkeleton  = true,
+    ShowName      = true,
+    ShowHP        = true,
+    ShowDist      = true,
+    ShowState     = true,
+    ShowFOV       = true,
+    ShowSwastika  = true,
+    ShowAimLine   = true,
+    ShowTracer    = true,
+    ShowHitmarker = true,
+    HitSound      = true,
+
+    KillAllSpam = false,
+    SpotAll     = false,
+    GrenadeSpam = false,
+    FFViewModel = false,
 }
 
 -- ================================================================
--- DRAWING UTILS
+-- DRAWING
 -- ================================================================
-local D = Drawing.new
-local function newDraw(cls, props)
-    local o = D(cls)
-    for k,v in pairs(props) do o[k]=v end
-    return o
+local function D(class, props)
+    local d = Drawing.new(class)
+    for k,v in pairs(props) do d[k]=v end
+    return d
 end
 
--- FOV circle
-local dFOVCircle = newDraw("Circle",{
-    Visible=true, Radius=CFG.FOV, Thickness=1.5,
-    Color=Color3.fromRGB(255,255,255), Transparency=0.6,
-    Filled=false,
+local dStatus = D("Text",{
+    Visible=true, Size=13, Color=Color3.fromRGB(0,255,100),
+    Outline=true, OutlineColor=Color3.fromRGB(0,0,0),
+    Position=Vector2.new(10,10), ZIndex=10,
+    Text="SA v13"
 })
-
--- Aim Line
-local dAimLine = newDraw("Line",{
-    Visible=false, Thickness=1,
-    Color=Color3.fromRGB(255,255,255), Transparency=0.5,
+local dFOVCircle = D("Circle",{
+    Visible=false, Radius=CFG.FOV, Color=Color3.fromRGB(255,255,255),
+    Thickness=1, Filled=false, Transparency=0.5
 })
 
 -- ================================================================
--- BULLET TRACERS  (3D world positions → screen each frame)
+-- HITMARKER
 -- ================================================================
-local TRACER_LIFE = 0.7   -- seconds
-local tracers = {}
+local hmLines = {}
+for i=1,4 do
+    hmLines[i] = D("Line",{Visible=false,Thickness=2,
+        Color=Color3.fromRGB(255,255,255),Transparency=1})
+end
+local hmUntil = 0
+
+-- ================================================================
+-- HITSOUND  -- recreated on every respawn
+-- ================================================================
+local hitSound = nil
+local function makeHitSound()
+    if hitSound then pcall(function() hitSound:Destroy() end) end
+    hitSound = Instance.new("Sound")
+    hitSound.SoundId  = "rbxassetid://115982072912004"
+    hitSound.Volume   = 1
+    hitSound.RollOffMaxDistance = 0
+    hitSound.Parent   = Camera
+end
+makeHitSound()
+LocalPlayer.CharacterAdded:Connect(function()
+    task.delay(1, makeHitSound)
+end)
+
+local function triggerHit()
+    hmUntil = tick() + 0.18
+    if CFG.HitSound and hitSound then
+        pcall(function() hitSound:Play() end)
+    end
+end
+
+-- ================================================================
+-- AIM LINE  (gun -> target)
+-- ================================================================
+local aimLine = D("Line",{Visible=false,Thickness=1.5,
+    Color=Color3.fromRGB(255,255,255),Transparency=0.3})
+
+-- ================================================================
+-- BULLET TRACERS  (3D positions, fade-out only)
+-- ================================================================
+local TRACER_LIFE = 0.5
+local tracers = {}  -- {line, from3d, to3d, born}
 
 local function spawnTracer(from3d, to3d)
-    local l = newDraw("Line",{
-        Visible=true, Thickness=3,
-        Color=Color3.fromRGB(255,210,40),
-        Transparency=0,
+    local l = D("Line",{
+        Visible=true, Thickness=2.5,
+        Color=Color3.fromRGB(255,200,50),
+        Transparency=0.3,  -- start semi-transparent
     })
     table.insert(tracers, {line=l, from3d=from3d, to3d=to3d, born=tick()})
 end
@@ -101,10 +171,7 @@ local function w2s(pos)
     local sp, vis = Camera:WorldToViewportPoint(pos)
     return Vector2.new(sp.X, sp.Y), vis, sp.Z
 end
-
-local function screenCenter()
-    return Camera.ViewportSize / 2
-end
+local function screenCenter() return Camera.ViewportSize / 2 end
 
 local function isTeammate(pl)
     if not CFG.TeamCheck then return false end
@@ -112,9 +179,10 @@ local function isTeammate(pl)
 end
 
 local function hsvToRgb(h, s, v)
-    local i = math.floor(h*6); local f = h*6-i
+    local i = math.floor(h*6)
+    local f = h*6 - i
     local p,q,t = v*(1-s), v*(1-(f)*s), v*(1-(1-f)*s)
-    i = i%6
+    i = i % 6
     if i==0 then return Color3.fromRGB(v*255,t*255,p*255)
     elseif i==1 then return Color3.fromRGB(q*255,v*255,p*255)
     elseif i==2 then return Color3.fromRGB(p*255,v*255,t*255)
@@ -124,214 +192,376 @@ local function hsvToRgb(h, s, v)
 end
 
 -- ================================================================
--- VIEWMODEL MUZZLE
+-- VIEWMODEL MUZZLE PATH
+-- workspace.Camera.Viewmodel.<WeaponModel>.Nodes.Muzzle
 -- ================================================================
 local function getViewmodelTool()
     local vm = Camera:FindFirstChild("Viewmodel")
     if not vm then return nil end
-    for _,c in ipairs(vm:GetChildren()) do
-        if c:IsA("Model") or c:IsA("Tool") then return c end
+    for _, ch in ipairs(vm:GetChildren()) do
+        if ch:IsA("Model") then return ch end
     end
     return nil
 end
 
 local function getMuzzlePos()
-    local t = getViewmodelTool()
-    if not t then
-        local char = LocalPlayer.Character
-        local hrp  = char and char:FindFirstChild("HumanoidRootPart")
-        return hrp and hrp.Position or Camera.CFrame.Position
+    local vmTool = getViewmodelTool()
+    if vmTool then
+        local nodes = vmTool:FindFirstChild("Nodes")
+        if nodes then
+            for _, n in ipairs({"Muzzle","MuzzlePoint","FirePoint","BarrelEnd","TipAttachment"}) do
+                local att = nodes:FindFirstChild(n)
+                if att then
+                    if att:IsA("Attachment") then return att.WorldPosition end
+                    if att:IsA("BasePart") then return att.Position end
+                end
+            end
+        end
+        -- deep fallback inside tool
+        local att = vmTool:FindFirstChild("Muzzle",true) or vmTool:FindFirstChild("MuzzlePoint",true)
+        if att then
+            if att:IsA("Attachment") then return att.WorldPosition end
+            if att:IsA("BasePart") then return att.Position end
+        end
+        local pp = vmTool.PrimaryPart
+        if pp then return pp.Position end
     end
-    local m = t:FindFirstChild("Muzzle",true) or t:FindFirstChild("Handle",true)
-    return m and m.WorldPosition or Camera.CFrame.Position
-end
-
--- ================================================================
--- FORCEFIELD VIEWMODEL  (skip Chamber parts)
--- ================================================================
-local function applyFF(state)
     local char = LocalPlayer.Character
-    if char then
-        local hum = char:FindFirstChildOfClass("Humanoid")
-        if hum then hum.RequiresNeck = false end
-    end
-    local t = getViewmodelTool()
-    if not t then return end
-    for _,p in ipairs(t:GetDescendants()) do
-        if p:IsA("BasePart") and p.Name ~= "Chamber" then
-            p.LocalTransparencyModifier = state and 1 or 0
+    local rh = char and (char:FindFirstChild("RightHand") or char:FindFirstChild("Right Arm"))
+    return rh and rh.Position or Camera.CFrame.Position
+end
+
+-- ================================================================
+-- FORCEFIELD VIEWMODEL  (skip Chamber)
+-- ================================================================
+local function applyFF(enable)
+    local vmTool = getViewmodelTool()
+    if not vmTool then return end
+    for _, p in vmTool:GetDescendants() do
+        if p.Name == "Chamber" then continue end
+        if p:IsA("BasePart") or p:IsA("MeshPart") or p:IsA("UnionOperation") then
+            pcall(function()
+                if enable then
+                    p.Material    = Enum.Material.ForceField
+                    p.Color       = Color3.fromRGB(30,180,220)
+                    p.Transparency = math.min(p.Transparency, 0.05)
+                else
+                    p.Material = Enum.Material.SmoothPlastic
+                end
+            end)
         end
     end
 end
 
--- watch viewmodel changes and re-apply FF
-local _lastVmTool = nil
-RunService.RenderStepped:Connect(function()
-    local cur = getViewmodelTool()
-    if cur ~= _lastVmTool then
-        _lastVmTool = cur
-        if CFG.FFViewModel and cur then
-            task.delay(0.1, function() applyFF(true) end)
+-- watch viewmodel changes
+task.spawn(function()
+    local last = nil
+    while task.wait(0.3) do
+        local cur = getViewmodelTool()
+        if cur ~= last then
+            last = cur
+            if cur and CFG.FFViewModel then
+                task.delay(0.2, function() applyFF(true) end)
+            end
         end
     end
 end)
 
 -- ================================================================
--- HIT SOUND
+-- SKELETON BONES
 -- ================================================================
-local hitSound = nil
-local function buildHitSound()
-    if hitSound and hitSound.Parent then hitSound:Destroy() end
-    local s = Instance.new("Sound")
-    s.SoundId  = CFG.HitSoundId
-    s.Volume   = 1
-    s.RollOffMaxDistance = 0
-    s.Parent   = LocalPlayer.PlayerGui
-    hitSound   = s
-end
+local SKEL = {
+    {"Head","UpperTorso"},{"UpperTorso","LowerTorso"},
+    {"UpperTorso","LeftUpperArm"},{"LeftUpperArm","LeftLowerArm"},{"LeftLowerArm","LeftHand"},
+    {"UpperTorso","RightUpperArm"},{"RightUpperArm","RightLowerArm"},{"RightLowerArm","RightHand"},
+    {"LowerTorso","LeftUpperLeg"},{"LeftUpperLeg","LeftLowerLeg"},{"LeftLowerLeg","LeftFoot"},
+    {"LowerTorso","RightUpperLeg"},{"RightUpperLeg","RightLowerLeg"},{"RightLowerLeg","RightFoot"},
+}
 
-buildHitSound()
-LocalPlayer.CharacterAdded:Connect(function()
-    task.delay(1, buildHitSound)
-end)
+-- ================================================================
+-- ESP CACHE
+-- ================================================================
+local espCache = {}
 
-local function playHitSound()
-    if hitSound then
-        hitSound:Play()
+local function makeESP()
+    local e = {}
+    e.box = {}
+    for i=1,8 do e.box[i]=D("Line",{Visible=false,Thickness=1.5,
+        Color=Color3.fromRGB(255,255,255),Transparency=0.15}) end
+    e.hpBg  = D("Line",{Visible=false,Thickness=5,Color=Color3.fromRGB(0,0,0),Transparency=0.5})
+    e.hpBar = D("Line",{Visible=false,Thickness=3,Color=Color3.fromRGB(0,255,80),Transparency=0.15})
+    e.name  = D("Text",{Visible=false,Size=13,Color=Color3.fromRGB(255,255,255),
+        Outline=true,OutlineColor=Color3.fromRGB(0,0,0),Center=true})
+    e.dist  = D("Text",{Visible=false,Size=11,Color=Color3.fromRGB(200,200,200),
+        Outline=true,OutlineColor=Color3.fromRGB(0,0,0),Center=true})
+    e.state = D("Text",{Visible=false,Size=11,Color=Color3.fromRGB(255,200,50),
+        Outline=true,OutlineColor=Color3.fromRGB(0,0,0),Center=true})
+    e.skel = {}
+    for i=1,#SKEL do
+        e.skel[i]=D("Line",{Visible=false,Thickness=1,
+            Color=Color3.fromRGB(255,255,255),Transparency=0.3})
     end
-end
-
--- ================================================================
--- NOTIFY
--- ================================================================
-local function notify(title, body)
-    pcall(function()
-        game:GetService("StarterGui"):SetCore("SendNotification",{
-            Title=title, Text=body, Duration=2
-        })
-    end)
-end
-
--- ================================================================
--- ESP
--- ================================================================
-local espPool = {}
-local function getESP(pl)
-    if not espPool[pl] then
-        espPool[pl] = {
-            box   = newDraw("Square",{Visible=false,Thickness=1.5,Filled=false}),
-            name  = newDraw("Text",{Visible=false,Size=13,Center=true,Outline=true,Font=2}),
-            hp    = newDraw("Square",{Visible=false,Thickness=1,Filled=true}),
-            hpBg  = newDraw("Square",{Visible=false,Thickness=1,Filled=true,Color=Color3.fromRGB(20,20,20),Transparency=0.5}),
-            dist  = newDraw("Text",{Visible=false,Size=11,Center=true,Outline=true,Font=2,Color=Color3.fromRGB(255,255,255)}),
-            hcirc = newDraw("Circle",{Visible=false,Filled=false,Thickness=1.5}),
-        }
-    end
-    return espPool[pl]
+    e.headCircle = D("Circle",{Visible=false,Filled=false,Thickness=1.5,
+        Radius=5,Color=Color3.fromRGB(255,255,255),Transparency=0.15})
+    return e
 end
 
 local function hideESP(e)
-    if not e then return end
-    for _,v in pairs(e) do v.Visible=false end
+    for _,l in ipairs(e.box) do l.Visible=false end
+    for _,l in ipairs(e.skel) do l.Visible=false end
+    e.hpBg.Visible=false; e.hpBar.Visible=false
+    e.name.Visible=false; e.dist.Visible=false
+    e.state.Visible=false; e.headCircle.Visible=false
 end
 
-local function cleanESP(pl)
-    local e = espPool[pl]
-    if e then
-        for _,v in pairs(e) do pcall(function() v:Remove() end) end
-        espPool[pl] = nil
+local function removeESP(e)
+    hideESP(e)
+    for _,l in ipairs(e.box) do pcall(l.Remove,l) end
+    for _,l in ipairs(e.skel) do pcall(l.Remove,l) end
+    for _,obj in ipairs({e.hpBg,e.hpBar,e.name,e.dist,e.state,e.headCircle}) do
+        pcall(obj.Remove,obj)
     end
 end
 
-Players.PlayerRemoving:Connect(cleanESP)
+local function getESP(pl)
+    if not espCache[pl] then espCache[pl]=makeESP() end
+    return espCache[pl]
+end
+
+Players.PlayerRemoving:Connect(function(pl)
+    if espCache[pl] then removeESP(espCache[pl]); espCache[pl]=nil end
+end)
 
 -- ================================================================
--- GC REFS  (dump-accurate: u7 table has ShootRate+ShootType)
+-- BOX (corner style)
 -- ================================================================
-local u7Ref = nil
-local infFns = {}
+local function drawBox(e, tl, br, col)
+    local w,h = br.X-tl.X, br.Y-tl.Y
+    local cw = math.clamp(w*0.22, 3, 14)
+    local ch = math.clamp(h*0.22, 3, 14)
+    local segs = {
+        {tl,                        tl+Vector2.new(cw,0)},
+        {tl,                        tl+Vector2.new(0,ch)},
+        {Vector2.new(br.X,tl.Y),    Vector2.new(br.X-cw,tl.Y)},
+        {Vector2.new(br.X,tl.Y),    Vector2.new(br.X,tl.Y+ch)},
+        {br,                        br+Vector2.new(-cw,0)},
+        {br,                        br+Vector2.new(0,-ch)},
+        {Vector2.new(tl.X,br.Y),    Vector2.new(tl.X+cw,br.Y)},
+        {Vector2.new(tl.X,br.Y),    Vector2.new(tl.X,br.Y-ch)},
+    }
+    for i,seg in ipairs(segs) do
+        local l=e.box[i]; l.Visible=true
+        l.From=seg[1]; l.To=seg[2]; l.Color=col
+    end
+end
+
+-- ================================================================
+-- HP BAR
+-- ================================================================
+local function drawHP(e, tl, br, hp)
+    local x = tl.X - 6
+    e.hpBg.Visible=true
+    e.hpBg.From=Vector2.new(x,br.Y); e.hpBg.To=Vector2.new(x,tl.Y)
+    local midY = br.Y + (tl.Y-br.Y)*(hp/100)
+    e.hpBar.Visible=true
+    e.hpBar.From=Vector2.new(x,br.Y); e.hpBar.To=Vector2.new(x,midY)
+    local r=math.floor(255*(1-hp/100)); local g=math.floor(255*(hp/100))
+    e.hpBar.Color=Color3.fromRGB(r,g,0)
+end
+
+-- ================================================================
+-- SKELETON
+-- ================================================================
+local function drawSkeleton(e, char, col)
+    local pts={}
+    for _,p in ipairs(char:GetChildren()) do
+        if p:IsA("BasePart") then pts[p.Name]=p end
+    end
+    for i,conn in ipairs(SKEL) do
+        local l=e.skel[i]; if not l then continue end
+        local a,b=pts[conn[1]],pts[conn[2]]
+        if a and b then
+            local sa,va=w2s(a.Position); local sb,vb=w2s(b.Position)
+            if va and vb then l.Visible=true;l.From=sa;l.To=sb;l.Color=col
+            else l.Visible=false end
+        else l.Visible=false end
+    end
+    local hd=pts["Head"]
+    if hd then
+        local sh,vh=w2s(hd.Position)
+        if vh then
+            local dist=(hd.Position-Camera.CFrame.Position).Magnitude
+            -- small at range: 1200/dist clamped 2..5
+            e.headCircle.Visible=true
+            e.headCircle.Position=sh
+            e.headCircle.Radius=math.clamp(1200/math.max(dist,1), 2, 5)
+            e.headCircle.Color=col
+        else e.headCircle.Visible=false end
+    else e.headCircle.Visible=false end
+end
+
+-- ================================================================
+-- STATE (ASCII only)
+-- ================================================================
+local function getState(char, hum)
+    if not hum or hum.Health<=0 then return "" end
+    -- vehicle / seat detection
+    local seat = char:FindFirstChildOfClass("Seat") or char:FindFirstChildOfClass("VehicleSeat")
+    if seat then return "Vehicle" end
+    -- check if HRP is inside a VehicleSeat via occupant
+    for _, obj in workspace:GetDescendants() do
+        if (obj:IsA("VehicleSeat") or obj:IsA("Seat")) then
+            local ok,occ=pcall(function() return obj.Occupant end)
+            if ok and occ then
+                local pl = Players:GetPlayerFromCharacter(occ.Parent)
+                if pl and pl == Players:GetPlayerFromCharacter(char) then
+                    return "Vehicle"
+                end
+            end
+        end
+    end
+    if char:GetAttribute("Prone")      then return "Prone"    end
+    if char:GetAttribute("Crouching")  then return "Crouch"   end
+    if char:GetAttribute("Crouch")     then return "Crouch"   end
+    if char:GetAttribute("IsGrappling") then return "Grapple"  end
+    local st = hum:GetState()
+    if st==Enum.HumanoidStateType.Freefall  then return "Air"      end
+    if st==Enum.HumanoidStateType.Swimming  then return "Swim"     end
+    if st==Enum.HumanoidStateType.Climbing  then return "Climb"    end
+    return ""
+end
+
+-- ================================================================
+-- SWASTIKA  (Drawing.Line, 8 segments, RGB, smaller)
+-- ================================================================
+local swLines={}
+for i=1,8 do swLines[i]=D("Line",{Visible=false,Thickness=2.2,
+    Color=Color3.fromRGB(255,0,0),Transparency=0.05}) end
+local swAngle=0
+
+local SW_ARMS = {
+    {dir=Vector2.new( 0,-1), cross=Vector2.new( 1, 0)},
+    {dir=Vector2.new( 1, 0), cross=Vector2.new( 0, 1)},
+    {dir=Vector2.new( 0, 1), cross=Vector2.new(-1, 0)},
+    {dir=Vector2.new(-1, 0), cross=Vector2.new( 0,-1)},
+}
+
+local function rotV2(v,a)
+    local c,s=math.cos(a),math.sin(a)
+    return Vector2.new(v.X*c-v.Y*s, v.X*s+v.Y*c)
+end
+
+local function drawSwastika(center, sz, ang, col)
+    for i,arm in ipairs(SW_ARMS) do
+        local d  = rotV2(arm.dir,   ang)
+        local cr = rotV2(arm.cross, ang)
+        local base = center + d*(sz*0.18)
+        local tip  = center + d*sz
+        local tail = tip + cr*(sz*0.55)
+        swLines[i*2-1].Visible=true; swLines[i*2-1].From=base; swLines[i*2-1].To=tip; swLines[i*2-1].Color=col
+        swLines[i*2  ].Visible=true; swLines[i*2  ].From=tip;  swLines[i*2  ].To=tail; swLines[i*2  ].Color=col
+    end
+end
+
+local function hideSwastika()
+    for _,l in ipairs(swLines) do l.Visible=false end
+end
+
+-- ================================================================
+-- TARGET CACHE
+-- ================================================================
+local cachedTarget=nil; local cachedTargetPos=nil; local cachedDist=0
+local _fc=0
+
+local function predictPos(part)
+    if not CFG.PredictLead then return part.Position end
+    local root=part.Parent:FindFirstChild("HumanoidRootPart") or part
+    local ok,vel=pcall(function() return root.AssemblyLinearVelocity end)
+    if not ok then return part.Position end
+    return part.Position + vel*(cachedDist/1200)*CFG.LeadFactor
+end
+
+local function updateCache()
+    local center=screenCenter(); local camPos=Camera.CFrame.Position
+    local bestSd=math.huge; local best,bestPos,bestDist=nil,nil,0
+    for _,pl in ipairs(Players:GetPlayers()) do
+        if pl==LocalPlayer then continue end
+        if isTeammate(pl) then continue end
+        local char=pl.Character; if not char then continue end
+        local hum=char:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health<=0 then continue end
+        local part=char:FindFirstChild(CFG.AimPart) or char:FindFirstChild("HumanoidRootPart")
+        if not part then continue end
+        local pp=predictPos(part)
+        local sp,vis=w2s(pp); if not vis then continue end
+        local sd=(sp-center).Magnitude
+        if sd>CFG.FOV then continue end
+        if sd<bestSd then
+            bestSd=sd; best=pl; bestPos=pp
+            bestDist=(pp-camPos).Magnitude
+        end
+    end
+    cachedTarget=best; cachedTargetPos=bestPos; cachedDist=bestDist
+end
+
+-- ================================================================
+-- GC REFS
+-- ================================================================
+local u7Ref=nil; local infFns={}
 
 local function refreshGunRefs()
-    u7Ref = nil; infFns = {}
-    -- find u7 settings table
+    u7Ref=nil; infFns={}
     for _,obj in getgc(true) do
-        if type(obj) ~= "table" then continue end
-        if rawget(obj,"ShootRate") ~= nil and rawget(obj,"ShootType") ~= nil
-           and rawget(obj,"Ammo") ~= nil then
-            u7Ref = obj
-            if not u7Ref._origSR then u7Ref._origSR = u7Ref.ShootRate end
-            if not u7Ref._origST then u7Ref._origST = u7Ref.ShootType end
+        if type(obj)~="table" then continue end
+        if rawget(obj,"ShootRate")~=nil and rawget(obj,"ShootType")~=nil then
+            u7Ref=obj
+            if not u7Ref._origSR then u7Ref._origSR=u7Ref.ShootRate end
             break
         end
     end
-    -- InfAmmo: find upvalue-bearing functions that manage u3/u4 ammo counters
-    -- u3=AmmoInGun (0-999), u4=StoredAmmo (0-9999999)
-    -- safe criteria: has table with ShootRate AND a number in [0..9999]
-    -- SKIP if any upvalue is a userdata AnimationTrack/AnimationController
-    --       or is a Vector3/CFrame (animation positional data)
+    -- InfAmmo: find functions that manage ammo counters (not animations)
+    -- Criteria: has upvalue that is a table with ShootRate AND a numeric value 0-999
+    -- Explicitly skip functions with upvalues touching AnimationController/AnimTrack/CFrame
     for _,f in getgc(false) do
-        if type(f) ~= "function" then continue end
-        local ok,info = pcall(debug.getinfo, f)
-        if not ok or not info then continue end
-        local nups = info.nups or 0
-        if nups == 0 or nups > 20 then continue end
-        local ok2,uvs = pcall(debug.getupvalues, f)
-        if not ok2 or not uvs then continue end
-        local hasGunTable = false
-        local hasAmmoNum  = false
-        local unsafe      = false
+        if type(f)~="function" then continue end
+        local ok,info=pcall(debug.getinfo,f)
+        if not ok then continue end
+        local nups=(info and info.nups) or 0
+        if nups==0 or nups>15 then continue end
+        local ok2,uvs=pcall(debug.getupvalues,f)
+        if not ok2 then continue end
+        local hasGunTable=false; local hasAmmoNum=false; local hasAnim=false
         for _,v in pairs(uvs) do
-            if type(v) == "table" and rawget(v,"ShootRate") ~= nil then
-                hasGunTable = true
-            end
-            if type(v) == "number" and v >= 0 and v <= 9999 then
-                hasAmmoNum = true
-            end
-            if type(v) == "userdata" then
-                local ok3,cn = pcall(function() return v.ClassName end)
-                if ok3 and (
-                    cn == "AnimationTrack" or cn == "Animation" or
-                    cn == "AnimationController" or cn == "Animator" or
-                    cn == "Motor6D"
-                ) then
-                    unsafe = true; break
-                end
-            end
-            -- skip CFrame/Vector3 upvalues (animation lerping)
-            if type(v) == "userdata" then
-                local ok4,tp = pcall(function() return typeof(v) end)
-                if ok4 and (tp == "CFrame" or tp == "Vector3") then
-                    unsafe = true; break
+            if type(v)=="table" and rawget(v,"ShootRate")~=nil then hasGunTable=true end
+            if type(v)=="number" and v>=0 and v<=999 then hasAmmoNum=true end
+            -- skip anything touching animation data
+            if type(v)=="userdata" then
+                local ok3,cn=pcall(function() return v.ClassName end)
+                if ok3 and (cn=="AnimationTrack" or cn=="Animation" or cn=="AnimationController") then
+                    hasAnim=true; break
                 end
             end
         end
-        if hasGunTable and hasAmmoNum and not unsafe then
-            infFns[#infFns+1] = f
+        if hasGunTable and hasAmmoNum and not hasAnim then
+            infFns[#infFns+1]=f
         end
     end
-    print(("[SilentAim v2] u7=%s infFns=%d"):format(tostring(u7Ref ~= nil), #infFns))
+    print(("[SA v13] u7=%s infFns=%d"):format(tostring(u7Ref~=nil),#infFns))
 end
 
--- watch tool changes
 task.spawn(function()
-    local lastTool = nil
-    while task.wait(0.25) do
-        local char   = LocalPlayer.Character
-        local cTool  = char and char:FindFirstChildOfClass("Tool")
-        local vmTool = getViewmodelTool()
-        local obs    = vmTool or cTool
-        if obs ~= lastTool then
-            lastTool = obs
-            if obs then
-                task.delay(0.25, function()
+    local lastTool=nil
+    while task.wait(0.3) do
+        local vmTool=getViewmodelTool()
+        local char=LocalPlayer.Character
+        local cTool=char and char:FindFirstChildOfClass("Tool")
+        local observed=vmTool or cTool
+        if observed~=lastTool then
+            lastTool=observed
+            if observed then
+                task.delay(0.2, function()
                     refreshGunRefs()
-                    -- FullAuto: set ShootType=3 AND patch FireModes.Auto=true
-                    if CFG.FullAuto and u7Ref then
-                        u7Ref.FireModes = u7Ref.FireModes or {}
-                        u7Ref.FireModes.Auto = true
-                        u7Ref.ShootType = 3
-                        u7Ref.ShootRate = 99999
-                    end
+                    if CFG.FullAuto and u7Ref then u7Ref.ShootRate=99999 end
                     if CFG.FFViewModel then applyFF(true) end
                 end)
             end
@@ -340,980 +570,798 @@ task.spawn(function()
 end)
 
 -- ================================================================
--- HEARTBEAT  (InfAmmo, tracers, ESP)
+-- HEARTBEAT  (InfAmmo, KillAllSpam, GrenadeSpam)
 -- ================================================================
 RunService.Heartbeat:Connect(function()
-    -- InfAmmo: push ammo-counter upvalues to 9999
     if CFG.InfAmmo then
         for _,f in ipairs(infFns) do
-            local ok,uvs = pcall(debug.getupvalues,f)
+            local ok,uvs=pcall(debug.getupvalues,f)
             if not ok then continue end
             for idx,val in pairs(uvs) do
-                if type(val) == "number" and val >= 0 and val <= 9999 then
-                    pcall(debug.setupvalue, f, idx, 9999)
+                if type(val)=="number" and val>=0 and val<=999 then
+                    pcall(debug.setupvalue,f,idx,9999)
                 end
             end
-        end
-    end
-    -- FullAuto persistent (keep ShootType=3 in case game resets it)
-    if CFG.FullAuto and u7Ref then
-        if u7Ref.ShootType ~= 3 then
-            u7Ref.ShootType = 3
         end
     end
 end)
 
 -- ================================================================
--- REMOTES LOADER  (from dump: ACS_Engine.Events)
+-- REMOTES LOADER
 -- ================================================================
-local R = {}
+local R={}
 task.spawn(function()
-    local rs  = game:GetService("ReplicatedStorage")
-    local cr  = (cloneref or function(x) return x end)
-    local PE  = rs:WaitForChild("PlayerEvents",10)
-    local ACS = rs:WaitForChild("ACS_Engine",10)
-    local EV  = ACS and ACS:WaitForChild("Events",10)
-
-    local function fw(parent, name, timeout)
-        if not parent then return nil end
-        local ok,v = pcall(function() return parent:WaitForChild(name, timeout or 6) end)
+    local rs=game:GetService("ReplicatedStorage")
+    local cr=(cloneref or function(x) return x end)
+    local function fw(p,n,t)
+        local ok,v=pcall(function() return p:WaitForChild(n,t or 8) end)
         return ok and v or nil
     end
-    local function fwm(parent, ...)
-        local cur = parent
-        for _,name in ipairs({...}) do
-            cur = cur and fw(cur, name)
-        end
-        return cur
+    local engine=fw(rs,"ACS_Engine"); local ev=engine and fw(engine,"Events")
+    local pe=fw(rs,"PlayerEvents"); local med=ev and fw(ev,"MedSys")
+
+    if ev then
+        R.ServerBullet = cr(ev:FindFirstChild("ServerBullet"))
+        R.Damage       = cr(ev:FindFirstChild("Damage"))
+        R.ServerGrenade= cr(ev:FindFirstChild("ServerGrenade"))
+        R.SVFlash      = cr(ev:FindFirstChild("SVFlash"))
+        R.SVLaser      = cr(ev:FindFirstChild("SVLaser"))
+        R.NVG          = cr(ev:FindFirstChild("NVG"))
+        R.Surrender    = cr(ev:FindFirstChild("Surrender"))
+        R.Drag         = cr(ev:FindFirstChild("Drag"))
+        R.Equip        = cr(ev:FindFirstChild("Equip"))
+        R.Refil        = cr(ev:FindFirstChild("Refil"))
+        R.GunStance    = cr(ev:FindFirstChild("GunStance"))
+        R.HeadRot      = cr(ev:FindFirstChild("HeadRot"))
+        R.StopGrapple  = cr(ev:FindFirstChild("StopGrappling"))
+        R.ExplosionFX  = cr(ev:FindFirstChild("ExplosionFX"))
+        R.TankFireFX   = cr(ev:FindFirstChild("TankFireFX"))
+        R.HeliRocketFX = cr(ev:FindFirstChild("HeliRocketFireFX"))
+        R.HitEffect    = cr(ev:FindFirstChild("HitEffect"))
+        R.MLGHitmarker = cr(ev:FindFirstChild("MLGHitmarker"))
+        R.Turret       = cr(ev:FindFirstChild("Turret"))
+        R.TurretHit    = cr(ev:FindFirstChild("TurretHit"))
+        R.TurretEnter  = cr(ev:FindFirstChild("TurretEnter"))
+        R.TurretAngle  = cr(ev:FindFirstChild("TurretAngleChanged"))
+        R.Breach       = cr(ev:FindFirstChild("Breach"))
+        R.DoorEvent    = cr(ev:FindFirstChild("DoorEvent"))
+        R.Stance       = cr(ev:FindFirstChild("Stance"))
+        R.GrenadeCook  = cr(ev:FindFirstChild("GrenadeCookoff"))
+        R.Grenade      = cr(ev:FindFirstChild("Grenade"))
     end
+    if med then
+        R.Collapse   = cr(med:FindFirstChild("Collapse"))
+        R.MedHandler = cr(med:FindFirstChild("MedHandler"))
+    end
+    if pe then
+        R.SpotPlayer   = cr(pe:FindFirstChild("SpotPlayer"))
+        R.KillMe       = cr(pe:FindFirstChild("KillMe"))
+        R.DropGiveAmmo = cr(pe:FindFirstChild("DropGiveAmmo"))
+        R.RequestDeploy= cr(pe:FindFirstChild("RequestDeploy"))
+        R.VehiclePers  = cr(pe:FindFirstChild("VehiclePersistence"))
+        R.ClaimStarter = cr(pe:FindFirstChild("ClaimFreeStarterPack"))
+        R.CollectCash  = cr(rs:FindFirstChild("CollectCashEvent"))
+    end
+    R.RequestGroundVeh = cr(rs:FindFirstChild("RequestGroundVehicleEvent"))
+    R.RequestHeli      = cr(rs:FindFirstChild("RequestHelicopterEvent"))
+    R.RequestPlane     = cr(rs:FindFirstChild("RequestPlaneEvent"))
+    R.GrenadeCookGlobal= cr(rs:FindFirstChild("GrenadeCookoff"))
+    R.FlareRep         = cr(rs:FindFirstChild("FlareReplicationEvent"))
 
-    -- ACS events (confirmed in dump)
-    R.SVFlash         = EV and fw(EV,"SVFlash")           -- (tool, bool)
-    R.SVLaser         = EV and fw(EV,"SVLaser")           -- (attachPart, mode, color, bool, tool)
-    R.HeadRot         = EV and fw(EV,"HeadRot")           -- (CFrame)
-    R.Atirar          = EV and fw(EV,"Atirar")            -- (tool, originCF, dirCF) -- shoot server bullet
-    R.ServerGrenade   = EV and fw(EV,"ServerGrenade")     -- (pos, vel, yVel)
-    R.GrenadeCookoff  = EV and fw(EV,"GrenadeCookoff")    -- (toolName)
-    R.StopGrappling   = EV and fw(EV,"StopGrappling")     -- ()
-    R.GunStance       = EV and fw(EV,"GunStance")         -- (tool, stanceId)
-    R.NVG             = EV and fw(EV,"NVG")               -- (bool)
-    R.Surrender       = EV and fw(EV,"Surrender")         -- () MedSys folder
-    R.Collapse        = fwm(EV,"MedSys","Collapse")       -- ()
-    R.EditKillCond    = EV and fw(EV,"EditKillConditions") -- (str, bool)
-
-    -- Heli/Plane (PlayerEvents - confirmed in dump: ReliableHeliEvent, UnreliableHeliEvent)
-    R.ReliableHeli    = PE and fw(PE,"ReliableHeliEvent")     -- (heliModel, "crashExplode") or ("crashDamage",dmg)
-    R.UnreliableHeli  = PE and fw(PE,"UnreliableHeliEvent")   -- (heliModel, "setRotorSpeed", spd)
-
-    -- Tycoon / world
-    R.CollectCash     = rs:FindFirstChild("CollectCashEvent")  -- ()
-    R.RequestPurchase = rs:FindFirstChild("RequestPurchaseEvent") -- (buttonPart)
-    R.KillMe          = PE and fw(PE,"KillMe.RE") or nil
-
-    -- MinigameEvent for state resend
-    R.MinigameEvent   = PE and fw(PE,"MinigameEvent")
-
-    -- Spotting
-    R.SpotPlayer      = PE and fwm(PE,"SpotPlayer")   -- (player)
-
-    -- KillMe (GroundWar minigame)
-    R.KillMe          = PE and fw(PE,"KillMe")
-
-    print("[SilentAim v2] Remotes loaded:", 
-        "SVFlash="..tostring(R.SVFlash~=nil),
-        "HeadRot="..tostring(R.HeadRot~=nil),
-        "ReliableHeli="..tostring(R.ReliableHeli~=nil),
-        "Collapse="..tostring(R.Collapse~=nil)
-    )
+    local n=0; for k,v in pairs(R) do if v then n=n+1 end end
+    print(("[SA v13] Remotes loaded: %d"):format(n))
 end)
 
 -- ================================================================
--- SILENT AIM CORE
+-- SHOOT HOOK
 -- ================================================================
-local cachedTarget    = nil
-local cachedTargetPos = nil
-local lastRainbow     = 0
-local rainbowHue      = 0
+local function hookShootModule()
+    local SM=nil
+    for _,obj in getgc(true) do
+        if type(obj)~="table" then continue end
+        local f=rawget(obj,"fire")
+        if type(f)~="function" then continue end
+        local ok,info=pcall(debug.getinfo,f)
+        if ok and info and (info.nups or 0)>=5 then SM=obj; break end
+    end
+    if not SM then warn("[SA v13] ShootModule not found"); return end
 
-local function getTarget()
-    local center = screenCenter()
-    local bestDist = CFG.FOV
-    local bestPl   = nil
+    local origFire=SM.fire
+    SM.fire=newcclosure(function(pl,origin,direction,shellData,extra)
+        if CFG.Enabled and pl==LocalPlayer then
+            if CFG.SilentAim and cachedTargetPos then
+                local t=cachedTargetPos-origin
+                if t.Magnitude>0 then direction=t.Unit end
+            end
+            if CFG.BulletTP and type(shellData)=="table" then shellData.shellSpeed=9e9 end
+            if CFG.ShowTracer then
+                local mp = getMuzzlePos()
+                local ep = cachedTargetPos or (origin+direction*600)
+                spawnTracer(mp, ep)
+            end
+            if cachedTargetPos and CFG.ShowHitmarker then
+                task.delay(0.04, triggerHit)
+            end
+            if CFG.ForceHit and cachedTarget and R.Damage then
+                task.defer(function()
+                    local char=cachedTarget and cachedTarget.Character; if not char then return end
+                    local hum=char:FindFirstChildOfClass("Humanoid")
+                    local hp=char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+                    if not hum or not hp or hum.Health<=0 then return end
+                    local sd={weaponName="G19X",shellType="Bullet",shellName="9x19mm",
+                        shellSpeed=9e9,maxPenetrationCount=0,currentPenetrationCount=0,
+                        penetrationMultiplier=0.8,origin=origin,
+                        bulletID=LocalPlayer.UserId..tick()..math.random(1,99999)}
+                    pcall(function() R.Damage:InvokeServer(sd,hum,(hp.Position-origin).Magnitude,1,hp) end)
+                    triggerHit()
+                end)
+            end
+        end
+        return origFire(pl,origin,direction,shellData,extra)
+    end)
+    print("[SA v13] ShootModule hooked")
+end
 
-    for _,pl in ipairs(Players:GetPlayers()) do
-        if pl == LocalPlayer then continue end
-        if isTeammate(pl) then continue end
-        local char = pl.Character
-        if not char then
-            -- check if player is in a vehicle seat
-            local found = false
-            for _,desc in ipairs(workspace:GetDescendants()) do
-                if desc:IsA("VehicleSeat") and desc.Occupant then
-                    local occ = desc.Occupant
-                    if occ.Parent and Players:GetPlayerFromCharacter(occ.Parent) == pl then
-                        char = occ.Parent
-                        found = true
-                        break
+local function hookNamecall()
+    local origNC
+    origNC=hookmetamethod(game,"__namecall",newcclosure(function(self,...)
+        local m=getnamecallmethod()
+        if CFG.Enabled and cachedTargetPos and m=="FireServer" then
+            local ok,nm=pcall(function() return self.Name end)
+            if ok and nm=="ServerBullet" then
+                local args=table.pack(...)
+                local oIdx,dIdx
+                for i=1,args.n do
+                    if typeof(args[i])=="Vector3" then
+                        if not oIdx then oIdx=i elseif not dIdx then dIdx=i; break end
                     end
                 end
+                if dIdx then
+                    local origin=oIdx and args[oIdx] or Camera.CFrame.Position
+                    local t=cachedTargetPos-origin
+                    if t.Magnitude>0 then args[dIdx]=t.Unit end
+                end
+                if type(args[3])=="table" and CFG.BulletTP then args[3].shellSpeed=9e9 end
+                return origNC(self,table.unpack(args,1,args.n))
             end
-            if not found then continue end
         end
-
-        local hum  = char:FindFirstChildOfClass("Humanoid")
-        local head = char:FindFirstChild("Head")
-        if not hum or hum.Health <= 0 or not head then continue end
-
-        local sp, vis, z = w2s(head.Position)
-        if not vis or z <= 0 then continue end
-
-        local d = (sp - center).Magnitude
-        if d < bestDist then
-            bestDist = d
-            bestPl   = pl
-        end
-    end
-
-    return bestPl
+        return origNC(self,...)
+    end))
+    print("[SA v13] hookmetamethod OK")
 end
 
 -- ================================================================
--- RENDER STEP (main loop)
+-- KILL ALL
 -- ================================================================
-RunService.RenderStepped:Connect(function()
-    local center = screenCenter()
-    local now    = tick()
-
-    -- rainbow hue advance
-    rainbowHue = (rainbowHue + 0.003) % 1
-
-    -- FOV circle
-    dFOVCircle.Position = center
-    dFOVCircle.Radius   = CFG.FOV
-    dFOVCircle.Color    = (cachedTarget and Color3.fromRGB(255,80,80)) or Color3.fromRGB(255,255,255)
-
-    -- ── TRACER FADE (correct: Transparency starts at 0 = fully visible, goes to 1 = gone) ──
-    local ti = 1
-    while ti <= #tracers do
-        local tr  = tracers[ti]
-        local age = now - tr.born
-        if age > TRACER_LIFE then
-            tr.line:Remove()
-            table.remove(tracers, ti)
-        else
-            local sp1, vis1, z1 = w2s(tr.from3d)
-            local sp2, _,    z2 = w2s(tr.to3d)
-            -- only draw if both ends are in front of camera
-            if vis1 and z1 > 0 and z2 > 0 then
-                local t = age / TRACER_LIFE  -- 0 → 1
-                tr.line.Visible      = true
-                tr.line.From         = sp1
-                -- tail (To) walks toward From as tracer "disappears from the end"
-                tr.line.To           = sp2:Lerp(sp1, math.min(t * 0.55, 1))
-                -- fade: 0 (fully visible) → 1 (invisible)
-                tr.line.Transparency = t
-            else
-                tr.line.Visible = false
+local function doKillAll()
+    if not R.Damage then return end
+    local myChar=LocalPlayer.Character
+    local origin=myChar and myChar.HumanoidRootPart and myChar.HumanoidRootPart.Position
+                or Camera.CFrame.Position
+    for _,pl in ipairs(Players:GetPlayers()) do
+        if pl==LocalPlayer then continue end
+        task.spawn(function()
+            local char=pl.Character; if not char then return end
+            local hum=char:FindFirstChildOfClass("Humanoid")
+            local hp=char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+            if not hum or not hp or hum.Health<=0 then return end
+            local sd={weaponName="G19X",shellType="Bullet",shellName="9x19mm",shellSpeed=9e9,
+                maxPenetrationCount=0,currentPenetrationCount=0,penetrationMultiplier=0.8,
+                origin=origin,bulletID=LocalPlayer.UserId..tick()..math.random(1,999999)}
+            for _=1,5 do
+                pcall(function() R.Damage:InvokeServer(sd,hum,(hp.Position-origin).Magnitude,1,hp) end)
             end
-            ti = ti + 1
-        end
+        end)
     end
+end
 
-    -- ── AIM LINE ──
-    if CFG.ShowAimLine and CFG.Enabled and cachedTargetPos then
-        local mp        = getMuzzlePos()
-        local msp, mvis = w2s(mp)
-        local tsp, tvis = w2s(cachedTargetPos)
-        if mvis and tvis then
-            dAimLine.Visible = true
-            dAimLine.From    = msp
-            dAimLine.To      = tsp
-            dAimLine.Color   = hsvToRgb(rainbowHue,1,1)
-        else
-            dAimLine.Visible = false
-        end
-    else
-        dAimLine.Visible = false
-    end
-
-    -- ── FIND TARGET ──
-    if CFG.Enabled then
-        cachedTarget = getTarget()
-    else
-        cachedTarget = nil
-    end
-
-    -- ── SMOOTH AIM ──
-    if CFG.Enabled and cachedTarget then
-        local char = cachedTarget.Character
-        if char then
-            local head = char:FindFirstChild("Head")
-            if head then
-                cachedTargetPos = head.Position
-                local sp, vis = w2s(head.Position)
-                if vis then
-                    local delta = sp - center
-                    local moved = delta * CFG.SmoothFactor
-                    mousemoverel(moved.X, moved.Y)
+-- SpotAll loop
+task.spawn(function()
+    while task.wait(2) do
+        if CFG.SpotAll and R.SpotPlayer then
+            for _,pl in ipairs(Players:GetPlayers()) do
+                if pl~=LocalPlayer then
+                    pcall(function() R.SpotPlayer:FireServer(pl) end)
                 end
             end
         end
-    else
-        cachedTargetPos = nil
+    end
+end)
+
+-- KillAll spam loop
+RunService.Heartbeat:Connect(function()
+    if CFG.KillAllSpam then
+        doKillAll()
+    end
+    if CFG.GrenadeSpam and R.ServerGrenade then
+        local o=Camera.CFrame.Position
+        local tgt=cachedTargetPos or (o+Camera.CFrame.LookVector*50)
+        local dir=(tgt-o).Unit
+        pcall(function() R.ServerGrenade:FireServer(o,dir,{
+            shellType="Grenade",shellName="M67",shellSpeed=50,origin=o,
+            bulletID=LocalPlayer.UserId..tick()}) end)
+    end
+end)
+
+-- ================================================================
+-- EXPLOIT UI  (troll/damage focused)
+-- ================================================================
+local exploitUI=nil; local uiVis=false
+
+local function buildUI()
+    if exploitUI then return end
+    local sg=Instance.new("ScreenGui")
+    sg.Name="SA_Troll"; sg.ResetOnSpawn=false; sg.DisplayOrder=999
+    pcall(function() sg.Parent=game:GetService("CoreGui") end)
+    if not sg.Parent then sg.Parent=LocalPlayer:WaitForChild("PlayerGui") end
+
+    local main=Instance.new("Frame",sg)
+    main.Size=UDim2.new(0,320,0,520)
+    main.Position=UDim2.new(0.5,-160,0.5,-260)
+    main.BackgroundColor3=Color3.fromRGB(12,12,18)
+    main.BorderSizePixel=0; main.Active=true; main.Draggable=true
+    Instance.new("UICorner",main).CornerRadius=UDim.new(0,8)
+    local stroke=Instance.new("UIStroke",main)
+    stroke.Color=Color3.fromRGB(50,100,230); stroke.Thickness=1.5
+
+    local title=Instance.new("TextLabel",main)
+    title.Size=UDim2.new(1,-30,0,34); title.Position=UDim2.new(0,0,0,0)
+    title.BackgroundColor3=Color3.fromRGB(18,18,30); title.BorderSizePixel=0
+    title.Text="SA v13  |  Troll Panel"; title.TextColor3=Color3.fromRGB(80,180,255)
+    title.TextSize=14; title.Font=Enum.Font.GothamBold
+    Instance.new("UICorner",title).CornerRadius=UDim.new(0,8)
+
+    local statusLbl=Instance.new("TextLabel",main)
+    statusLbl.Size=UDim2.new(1,-16,0,20); statusLbl.Position=UDim2.new(0,8,0,36)
+    statusLbl.BackgroundColor3=Color3.fromRGB(8,8,14); statusLbl.BorderSizePixel=0
+    statusLbl.Text="Ready"; statusLbl.TextColor3=Color3.fromRGB(150,150,170)
+    statusLbl.TextSize=11; statusLbl.Font=Enum.Font.Code
+    statusLbl.TextXAlignment=Enum.TextXAlignment.Left
+    Instance.new("UICorner",statusLbl).CornerRadius=UDim.new(0,4)
+    local function setS(msg,col)
+        statusLbl.Text="> "..msg
+        statusLbl.TextColor3=col or Color3.fromRGB(80,255,120)
     end
 
-    -- ── ESP ──
-    for _,pl in ipairs(Players:GetPlayers()) do
-        if pl == LocalPlayer then continue end
-        local e = getESP(pl)
+    local scroll=Instance.new("ScrollingFrame",main)
+    scroll.Size=UDim2.new(1,-8,1,-62); scroll.Position=UDim2.new(0,4,0,60)
+    scroll.BackgroundTransparency=1; scroll.BorderSizePixel=0
+    scroll.ScrollBarThickness=4; scroll.CanvasSize=UDim2.new(0,0,0,0)
+    scroll.AutomaticCanvasSize=Enum.AutomaticSize.Y
+    local ll=Instance.new("UIListLayout",scroll); ll.Padding=UDim.new(0,3)
+    local pp=Instance.new("UIPadding",scroll); pp.PaddingLeft=UDim.new(0,3)
+    pp.PaddingRight=UDim.new(0,3); pp.PaddingTop=UDim.new(0,3)
 
-        if not CFG.ESP then hideESP(e); continue end
+    local ord=0
+    local function sec(txt)
+        ord=ord+1
+        local l=Instance.new("TextLabel",scroll)
+        l.Size=UDim2.new(1,0,0,18); l.LayoutOrder=ord
+        l.BackgroundColor3=Color3.fromRGB(25,25,45); l.BorderSizePixel=0
+        l.Text="  "..txt; l.TextColor3=Color3.fromRGB(80,160,255)
+        l.TextSize=11; l.Font=Enum.Font.GothamSemibold
+        l.TextXAlignment=Enum.TextXAlignment.Left
+        Instance.new("UICorner",l).CornerRadius=UDim.new(0,4)
+    end
 
-        -- support players in vehicles
-        local char = pl.Character
-        if not char then
-            for _,desc in ipairs(workspace:GetDescendants()) do
-                if desc:IsA("VehicleSeat") and desc.Occupant then
-                    local occ = desc.Occupant
-                    if occ.Parent and Players:GetPlayerFromCharacter(occ.Parent) == pl then
-                        char = occ.Parent
-                        break
+    local function btn(lbl, desc, fn)
+        ord=ord+1
+        local f=Instance.new("Frame",scroll)
+        f.Size=UDim2.new(1,0,0,44); f.LayoutOrder=ord
+        f.BackgroundColor3=Color3.fromRGB(20,20,32); f.BorderSizePixel=0
+        Instance.new("UICorner",f).CornerRadius=UDim.new(0,6)
+        local b=Instance.new("TextButton",f)
+        b.Size=UDim2.new(0,80,0,26); b.Position=UDim2.new(1,-86,0.5,-13)
+        b.BackgroundColor3=Color3.fromRGB(35,85,195); b.BorderSizePixel=0
+        b.Text=lbl; b.TextColor3=Color3.fromRGB(255,255,255)
+        b.TextSize=11; b.Font=Enum.Font.GothamBold
+        Instance.new("UICorner",b).CornerRadius=UDim.new(0,5)
+        local d=Instance.new("TextLabel",f)
+        d.Size=UDim2.new(1,-94,1,0); d.Position=UDim2.new(0,6,0,0)
+        d.BackgroundTransparency=1; d.Text=desc
+        d.TextColor3=Color3.fromRGB(150,150,175); d.TextSize=10
+        d.Font=Enum.Font.Gotham; d.TextXAlignment=Enum.TextXAlignment.Left
+        d.TextWrapped=true
+        b.MouseEnter:Connect(function() b.BackgroundColor3=Color3.fromRGB(50,105,220) end)
+        b.MouseLeave:Connect(function() b.BackgroundColor3=Color3.fromRGB(35,85,195) end)
+        b.MouseButton1Click:Connect(function()
+            b.BackgroundColor3=Color3.fromRGB(20,55,140)
+            local ok2,err=pcall(fn,setS)
+            if not ok2 then setS("ERR: "..tostring(err):sub(1,55),Color3.fromRGB(255,70,70)) end
+            task.delay(0.25,function() b.BackgroundColor3=Color3.fromRGB(35,85,195) end)
+        end)
+    end
+
+    -- ---- BUTTONS ----
+    sec("== HELICOPTER / PLANE ==")
+    btn("Crash Helis","Crash ALL helicopters (CrashEvent)",function(s)
+        local rs2=game:GetService("ReplicatedStorage")
+        local helis=rs2:FindFirstChild("Helicopters")
+        if not helis then s("Helicopters not found",Color3.fromRGB(255,80,80)); return end
+        local n=0
+        for _,heli in helis:GetChildren() do
+            local net=heli:FindFirstChild("Networking")
+            local ce=net and net:FindFirstChild("CrashEvent")
+            if ce then pcall(function() ce:FireServer() end); n=n+1 end
+        end
+        s("CrashEvent -> "..n.." helis")
+    end)
+    btn("Crash Planes","Crash ALL planes (CrashEvent)",function(s)
+        local rs2=game:GetService("ReplicatedStorage")
+        local planes=rs2:FindFirstChild("Planes")
+        if not planes then s("Planes not found",Color3.fromRGB(255,80,80)); return end
+        local n=0
+        for _,plane in planes:GetChildren() do
+            local net=plane:FindFirstChild("Networking")
+            local ce=net and net:FindFirstChild("CrashEvent")
+            if ce then pcall(function() ce:FireServer() end); n=n+1 end
+        end
+        s("CrashEvent -> "..n.." planes")
+    end)
+    btn("Heli DmgSpam","Spam DamageEvent for all helis",function(s)
+        local rs2=game:GetService("ReplicatedStorage")
+        local helis=rs2:FindFirstChild("Helicopters")
+        if not helis then s("Helicopters not found",Color3.fromRGB(255,80,80)); return end
+        local n=0
+        for _,heli in helis:GetChildren() do
+            local net=heli:FindFirstChild("Networking")
+            local de=net and net:FindFirstChild("DamageEvent")
+            if de then
+                for _=1,10 do
+                    task.spawn(function() pcall(function() de:FireServer(9999) end) end)
+                end
+                n=n+1
+            end
+        end
+        s("DamageEvent x10 -> "..n.." helis")
+    end)
+    btn("Heli RocketFX","Fake rocket FX on all helis",function(s)
+        local rs2=game:GetService("ReplicatedStorage")
+        local helis=rs2:FindFirstChild("Helicopters")
+        local n=0
+        if helis then
+            for _,heli in helis:GetChildren() do
+                local net=heli:FindFirstChild("Networking")
+                local re=net and net:FindFirstChild("RocketEvent")
+                if re then
+                    pcall(function() re:FireServer(Camera.CFrame.Position,Camera.CFrame.LookVector) end); n=n+1
+                end
+            end
+        end
+        if R.HeliRocketFX then
+            pcall(function() R.HeliRocketFX:FireServer(Camera.CFrame.Position) end)
+        end
+        s("RocketEvent -> "..n.." helis")
+    end)
+
+    sec("== GROUND VEHICLES ==")
+    btn("Dmg Vehicles","Spam Damage remote with vehicle HRP",function(s)
+        if not R.Damage then s("Damage remote not ready",Color3.fromRGB(255,80,80)); return end
+        local n=0
+        for _,obj in workspace:GetDescendants() do
+            -- find VehicleSeats with an occupant
+            if obj:IsA("VehicleSeat") then
+                local ok2,occ=pcall(function() return obj.Occupant end)
+                if ok2 and occ then
+                    local char=occ.Parent
+                    local hum=char and char:FindFirstChildOfClass("Humanoid")
+                    local hp=char and (char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart"))
+                    if hum and hp then
+                        local origin=Camera.CFrame.Position
+                        local sd={weaponName="G19X",shellType="Bullet",shellName="9x19mm",shellSpeed=9e9,
+                            maxPenetrationCount=0,currentPenetrationCount=0,penetrationMultiplier=0.8,
+                            origin=origin,bulletID=LocalPlayer.UserId..tick()..math.random()}
+                        for _=1,5 do
+                            task.spawn(function()
+                                pcall(function() R.Damage:InvokeServer(sd,hum,(hp.Position-origin).Magnitude,1,hp) end)
+                            end)
+                        end
+                        n=n+1
                     end
                 end
             end
         end
-        if not char then hideESP(e); continue end
+        s("Vehicle damage x5 on "..n.." seats")
+    end)
+    btn("TankFire FX","Fake TankFireFX at all enemies",function(s)
+        if not R.TankFireFX then s("TankFireFX not found",Color3.fromRGB(255,80,80)); return end
+        local n=0
+        for _,pl in ipairs(Players:GetPlayers()) do
+            if pl==LocalPlayer then continue end
+            local char=pl.Character
+            local root=char and char:FindFirstChild("HumanoidRootPart")
+            if root then
+                pcall(function() R.TankFireFX:FireServer(root.Position,Camera.CFrame.LookVector) end)
+                n=n+1
+            end
+        end
+        s("TankFireFX -> "..n)
+    end)
+    btn("ExplosionFX","Spawn explosion FX at all enemies",function(s)
+        if not R.ExplosionFX then s("ExplosionFX not found",Color3.fromRGB(255,80,80)); return end
+        local n=0
+        for _,pl in ipairs(Players:GetPlayers()) do
+            if pl==LocalPlayer then continue end
+            local char=pl.Character
+            local root=char and char:FindFirstChild("HumanoidRootPart")
+            if root then
+                pcall(function() R.ExplosionFX:FireServer(root.Position,10) end)
+                n=n+1
+            end
+        end
+        s("ExplosionFX -> "..n.." players")
+    end)
 
-        local hum  = char:FindFirstChildOfClass("Humanoid")
+    sec("== PLAYER TROLL ==")
+    btn("SVFlash ALL","Flash grenade FX on all enemies",function(s)
+        if not R.SVFlash then s("SVFlash not found",Color3.fromRGB(255,80,80)); return end
+        local n=0
+        for _,pl in ipairs(Players:GetPlayers()) do
+            if pl==LocalPlayer then continue end
+            task.spawn(function()
+                pcall(function() R.SVFlash:FireServer(pl,Camera.CFrame.Position,3,true) end)
+            end)
+            n=n+1
+        end
+        s("SVFlash -> "..n.." players")
+    end)
+    btn("Collapse ALL","MedSys.Collapse on all enemies",function(s)
+        if not R.Collapse then s("Collapse not found",Color3.fromRGB(255,80,80)); return end
+        local n=0
+        for _,pl in ipairs(Players:GetPlayers()) do
+            if pl==LocalPlayer then continue end
+            task.spawn(function() pcall(function() R.Collapse:FireServer(pl) end) end); n=n+1
+        end
+        s("Collapse -> "..n.." players")
+    end)
+    btn("Surrender ALL","Force Surrender on all enemies",function(s)
+        if not R.Surrender then s("Surrender not found",Color3.fromRGB(255,80,80)); return end
+        local n=0
+        for _,pl in ipairs(Players:GetPlayers()) do
+            if pl==LocalPlayer then continue end
+            task.spawn(function() pcall(function() R.Surrender:FireServer(pl) end) end); n=n+1
+        end
+        s("Surrender -> "..n.." players")
+    end)
+    btn("HeadRot Spam","Spam HeadRot on all (glitchy necks)",function(s)
+        if not R.HeadRot then s("HeadRot not found",Color3.fromRGB(255,80,80)); return end
+        local n=0
+        for _,pl in ipairs(Players:GetPlayers()) do
+            if pl==LocalPlayer then continue end
+            for _=1,5 do
+                task.spawn(function()
+                    pcall(function() R.HeadRot:FireServer(pl, CFrame.Angles(math.pi,math.pi,math.pi)) end)
+                end)
+            end
+            n=n+1
+        end
+        s("HeadRot x5 -> "..n.." players")
+    end)
+    btn("StopGrapple","Stop all grappling hooks",function(s)
+        if not R.StopGrapple then s("StopGrappling not found",Color3.fromRGB(255,80,80)); return end
+        for _,pl in ipairs(Players:GetPlayers()) do
+            if pl==LocalPlayer then continue end
+            task.spawn(function() pcall(function() R.StopGrapple:FireServer(pl) end) end)
+        end
+        s("StopGrappling -> all")
+    end)
+    btn("GrenadeCook","GrenadeCookoff on all enemies",function(s)
+        local remote = R.GrenadeCook or R.GrenadeCookGlobal
+        if not remote then s("GrenadeCookoff not found",Color3.fromRGB(255,80,80)); return end
+        local n=0
+        for _,pl in ipairs(Players:GetPlayers()) do
+            if pl==LocalPlayer then continue end
+            task.spawn(function() pcall(function() remote:FireServer(pl) end) end); n=n+1
+        end
+        s("GrenadeCookoff -> "..n.." players")
+    end)
+    btn("Drag Target","Drag nearest enemy in FOV",function(s)
+        if not R.Drag then s("Drag not found",Color3.fromRGB(255,80,80)); return end
+        if not cachedTarget then s("No target in FOV",Color3.fromRGB(255,180,50)); return end
+        local char=cachedTarget.Character
+        local root=char and char:FindFirstChild("HumanoidRootPart")
+        if root then pcall(function() R.Drag:FireServer(root) end); s("Drag -> "..cachedTarget.Name) end
+    end)
+
+    sec("== SERVER MISC ==")
+    btn("OpenAllDoors","DoorEvent open all",function(s)
+        if not R.DoorEvent then s("DoorEvent not found",Color3.fromRGB(255,80,80)); return end
+        local n=0
+        for _,v in workspace:GetDescendants() do
+            if v.Name:lower():find("door") and v:IsA("Model") then
+                pcall(function() R.DoorEvent:FireServer(v,true) end); n=n+1
+            end
+        end
+        s("DoorEvent -> "..n.." doors")
+    end)
+    btn("Breach Walls","ACS Breach on all walls/barricades",function(s)
+        if not R.Breach then s("Breach not found",Color3.fromRGB(255,80,80)); return end
+        local n=0
+        for _,v in workspace:GetDescendants() do
+            if v:IsA("Model") and (v.Name:lower():find("wall") or v.Name:lower():find("barricade")) then
+                pcall(function() R.Breach:FireServer(v) end); n=n+1
+            end
+        end
+        s("Breach -> "..n)
+    end)
+    btn("CollectCash","CollectCashEvent spam x10",function(s)
+        if not R.CollectCash then s("CollectCashEvent not found",Color3.fromRGB(255,80,80)); return end
+        for _=1,10 do task.spawn(function() pcall(function() R.CollectCash:FireServer() end) end) end
+        s("CollectCash x10")
+    end)
+    btn("FlareAll","FlareReplicationEvent on all helis",function(s)
+        if not R.FlareRep then s("FlareRep not found",Color3.fromRGB(255,80,80)); return end
+        pcall(function() R.FlareRep:FireServer() end)
+        s("FlareReplicationEvent fired")
+    end)
+    btn("MLGHitmarker","Spam MLGHitmarker client FX",function(s)
+        if not R.MLGHitmarker then s("MLGHitmarker not found",Color3.fromRGB(255,80,80)); return end
+        for _=1,20 do
+            task.spawn(function() pcall(function() R.MLGHitmarker:FireServer() end) end)
+        end
+        s("MLGHitmarker x20")
+    end)
+
+    -- close button
+    local clsBtn=Instance.new("TextButton",main)
+    clsBtn.Size=UDim2.new(0,22,0,22); clsBtn.Position=UDim2.new(1,-26,0,6)
+    clsBtn.BackgroundColor3=Color3.fromRGB(170,35,35); clsBtn.BorderSizePixel=0
+    clsBtn.Text="X"; clsBtn.TextColor3=Color3.fromRGB(255,255,255)
+    clsBtn.TextSize=12; clsBtn.Font=Enum.Font.GothamBold
+    Instance.new("UICorner",clsBtn).CornerRadius=UDim.new(0,4)
+    clsBtn.MouseButton1Click:Connect(function()
+        main.Visible=false; uiVis=false
+    end)
+
+    exploitUI=main
+end
+
+local function toggleUI()
+    if not exploitUI then buildUI() end
+    uiVis=not uiVis; exploitUI.Visible=uiVis
+end
+
+-- ================================================================
+-- NOTIFY
+-- ================================================================
+local function notify(t,m)
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification",{Title=t,Text=m,Duration=2})
+    end)
+end
+
+-- ================================================================
+-- INPUT
+-- ================================================================
+UserInputService.InputBegan:Connect(function(input,gpe)
+    if gpe then return end
+    local k=input.KeyCode
+    if k==Enum.KeyCode.Insert then
+        CFG.Enabled=not CFG.Enabled; notify("SilentAim",CFG.Enabled and "ON" or "OFF")
+    elseif k==Enum.KeyCode.Delete then
+        CFG.BulletTP=not CFG.BulletTP; notify("BulletTP",CFG.BulletTP and "ON" or "OFF")
+    elseif k==Enum.KeyCode.End then
+        CFG.WallBang=not CFG.WallBang; notify("WallBang",CFG.WallBang and "ON" or "OFF")
+    elseif k==Enum.KeyCode.Home then
+        CFG.ForceHit=not CFG.ForceHit; notify("ForceHit",CFG.ForceHit and "ON" or "OFF")
+    elseif k==Enum.KeyCode.F5 then
+        CFG.InfAmmo=not CFG.InfAmmo; notify("InfAmmo",CFG.InfAmmo and "ON" or "OFF")
+    elseif k==Enum.KeyCode.F6 then
+        CFG.FullAuto=not CFG.FullAuto
+        if u7Ref then
+            u7Ref.ShootRate = CFG.FullAuto and 99999 or (u7Ref._origSR or u7Ref.ShootRate)
+        end
+        notify("FullAuto",CFG.FullAuto and "ON" or "OFF")
+    elseif k==Enum.KeyCode.F7 then
+        CFG.FFViewModel=not CFG.FFViewModel
+        applyFF(CFG.FFViewModel)
+        notify("FF ViewModel",CFG.FFViewModel and "ON" or "OFF")
+    elseif k==Enum.KeyCode.F8 then
+        CFG.ShowTracer=not CFG.ShowTracer; notify("Tracer",CFG.ShowTracer and "ON" or "OFF")
+    elseif k==Enum.KeyCode.F9 then
+        CFG.ShowAimLine=not CFG.ShowAimLine; notify("AimLine",CFG.ShowAimLine and "ON" or "OFF")
+    elseif k==Enum.KeyCode.F10 then
+        notify("KillAll","..."); task.spawn(doKillAll)
+    elseif k==Enum.KeyCode.F11 then
+        CFG.KillAllSpam=not CFG.KillAllSpam; notify("KillAllSpam",CFG.KillAllSpam and "ON" or "OFF")
+    elseif k==Enum.KeyCode.F12 then
+        CFG.SpotAll=not CFG.SpotAll; notify("SpotAll",CFG.SpotAll and "ON" or "OFF")
+    elseif k==Enum.KeyCode.KeypadZero then
+        CFG.GrenadeSpam=not CFG.GrenadeSpam; notify("GrenadeSpam",CFG.GrenadeSpam and "ON" or "OFF")
+    elseif k==Enum.KeyCode.KeypadOne then
+        local rs2=game:GetService("ReplicatedStorage")
+        local helis=rs2:FindFirstChild("Helicopters")
+        if helis then
+            for _,h in helis:GetChildren() do
+                local net=h:FindFirstChild("Networking")
+                local ce=net and net:FindFirstChild("CrashEvent")
+                if ce then pcall(function() ce:FireServer() end) end
+            end
+        end
+        notify("CrashAllHeli","sent")
+    elseif k==Enum.KeyCode.RightControl then
+        toggleUI()
+    elseif k==Enum.KeyCode.PageUp then
+        CFG.FOV=math.min(CFG.FOV+50,900); notify("FOV","= "..CFG.FOV)
+    elseif k==Enum.KeyCode.PageDown then
+        CFG.FOV=math.max(CFG.FOV-50,50); notify("FOV","= "..CFG.FOV)
+    end
+end)
+
+-- ================================================================
+-- RENDER LOOP
+-- ================================================================
+RunService.RenderStepped:Connect(function()
+    _fc=_fc+1
+    local upd=(_fc%2==0)
+
+    if upd then updateCache() end
+    swAngle=swAngle+0.045
+
+    -- STATUS
+    local function b(v) return v and "ON" or "--" end
+    dStatus.Text=("SA:%s BTP:%s WB:%s FH:%s IA:%s FA:%s FF:%s | KAS:%s GS:%s"):format(
+        b(CFG.SilentAim and CFG.Enabled),b(CFG.BulletTP),b(CFG.WallBang),
+        b(CFG.ForceHit),b(CFG.InfAmmo),b(CFG.FullAuto),b(CFG.FFViewModel),
+        b(CFG.KillAllSpam),b(CFG.GrenadeSpam))
+    dStatus.Color=CFG.Enabled and Color3.fromRGB(0,255,100) or Color3.fromRGB(255,80,80)
+
+    -- FOV CIRCLE
+    dFOVCircle.Position=screenCenter()
+    dFOVCircle.Radius=CFG.FOV
+    dFOVCircle.Visible=CFG.ShowFOV and CFG.Enabled
+    dFOVCircle.Color=(cachedTarget and Color3.fromRGB(255,80,80)) or Color3.fromRGB(255,255,255)
+
+    -- TRACER FADE-OUT (Transparency goes 0.3 -> 1.0 as age grows, plus shrinks from end)
+    local now=tick(); local ti=1
+    while ti<=#tracers do
+        local tr=tracers[ti]; local age=now-tr.born
+        if age>TRACER_LIFE then
+            tr.line:Remove(); table.remove(tracers,ti)
+        else
+            local sp1,v1=w2s(tr.from3d); local sp2,_=w2s(tr.to3d)
+            if v1 then
+                tr.line.Visible=true
+                tr.line.From=sp1
+                -- shrink from end: as age->1.0 the "To" approaches "From"
+                local t=age/TRACER_LIFE
+                tr.line.To=sp2:Lerp(sp1, t*0.4)
+                -- fade out: transparency goes from 0.3 (semi-trans) to 1.0 (invisible)
+                tr.line.Transparency=0.3 + t*0.7
+            else
+                tr.line.Visible=false
+            end
+            ti=ti+1
+        end
+    end
+
+    -- AIM LINE  (muzzle -> target, RGB)
+    if CFG.ShowAimLine and CFG.Enabled and cachedTargetPos then
+        local mp=getMuzzlePos()
+        local sp1,v1=w2s(mp)
+        local sp2,_ =w2s(cachedTargetPos)
+        if v1 then
+            aimLine.Visible=true; aimLine.From=sp1; aimLine.To=sp2
+            aimLine.Color=hsvToRgb((_fc*0.009)%1,1,1)
+        else aimLine.Visible=false end
+    else aimLine.Visible=false end
+
+    -- SWASTIKA  (smaller: clamp(3500/dist,22,50))
+    if CFG.ShowSwastika and CFG.Enabled and cachedTargetPos then
+        local sp,vis=w2s(cachedTargetPos)
+        if vis then
+            local sz=math.clamp(3500/math.max(cachedDist,1), 22, 50)
+            local col=hsvToRgb((tick()*0.55)%1,1,1)
+            drawSwastika(sp, sz, swAngle, col)
+        else hideSwastika() end
+    else hideSwastika() end
+
+    -- HITMARKER FADE-OUT
+    local hmNow=tick()
+    if CFG.ShowHitmarker and hmNow<hmUntil then
+        local alpha=(hmUntil-hmNow)/0.18
+        local c=screenCenter()
+        local len,gap=8,5
+        local segs={
+            {c+Vector2.new(-gap-len,-gap-len), c+Vector2.new(-gap,-gap)},
+            {c+Vector2.new( gap,-gap),         c+Vector2.new( gap+len,-gap-len)},
+            {c+Vector2.new(-gap, gap),         c+Vector2.new(-gap-len, gap+len)},
+            {c+Vector2.new( gap, gap),         c+Vector2.new( gap+len, gap+len)},
+        }
+        for i=1,4 do
+            hmLines[i].Visible=true
+            hmLines[i].From=segs[i][1]; hmLines[i].To=segs[i][2]
+            -- fade-out: starts visible (low Transparency), then goes to 1 (invisible)
+            hmLines[i].Transparency=1-alpha*0.9
+        end
+    else
+        for i=1,4 do hmLines[i].Visible=false end
+    end
+
+    if not upd then return end
+
+    -- PER-PLAYER ESP
+    if not CFG.ESPEnabled then
+        for _,e in pairs(espCache) do hideESP(e) end; return
+    end
+
+    for _,pl in ipairs(Players:GetPlayers()) do
+        if pl==LocalPlayer then continue end
+        local e=getESP(pl)
+        local char=pl.Character
+        if not char then hideESP(e); continue end
+        local hum=char:FindFirstChildOfClass("Humanoid")
         if not hum then hideESP(e); continue end
 
-        local root = char:FindFirstChild("HumanoidRootPart")
-        local head = char:FindFirstChild("Head")
+        local root=char:FindFirstChild("HumanoidRootPart")
+        local head=char:FindFirstChild("Head")
         if not root or not head then hideESP(e); continue end
 
-        -- FIX: guard rootZ before comparing (nil<=number crash)
-        local rsp, _, rootZ = w2s(root.Position)
-        if type(rootZ) ~= "number" or rootZ <= 0 then hideESP(e); continue end
+        -- always visible regardless of occlusion (no vis check on root)
+        -- but skip if completely off-screen
+        local _,_,rootZ=Camera:WorldToViewportPoint(root.Position)
+        if rootZ<=0 then hideESP(e); continue end
 
-        local hp  = math.clamp(math.floor(hum.Health), 0, 100)
-        local col = isTeammate(pl) and Color3.fromRGB(0,200,255) or Color3.fromRGB(255,60,60)
+        local hp=math.clamp(math.floor(hum.Health),0,100)
+        local col=isTeammate(pl) and Color3.fromRGB(0,200,255) or Color3.fromRGB(255,60,60)
 
-        -- bounding box  head→feet
-        local headTop = head.Position + Vector3.new(0, head.Size.Y*0.5+0.1, 0)
-        local lfoot   = char:FindFirstChild("LeftFoot") or char:FindFirstChild("RightFoot")
-                        or char:FindFirstChild("Left Leg") or char:FindFirstChild("Right Leg")
-        local feetBot = lfoot and (lfoot.Position - Vector3.new(0, lfoot.Size.Y*0.5, 0))
-                                or (root.Position - Vector3.new(0, 3.2, 0))
+        -- Full-body bounding box (head top -> foot bottom)
+        local headTop=head.Position+Vector3.new(0,head.Size.Y*0.5+0.1,0)
+        local lfoot=char:FindFirstChild("LeftFoot") or char:FindFirstChild("RightFoot")
+            or char:FindFirstChild("Left Leg") or char:FindFirstChild("Right Leg")
+        local feetBot=lfoot and (lfoot.Position-Vector3.new(0,lfoot.Size.Y*0.5,0))
+                              or (root.Position-Vector3.new(0,3.2,0))
 
-        local spHead, visHead, zHead = w2s(headTop)
-        local spFeet, _,      zFeet  = w2s(feetBot)
-        if type(zHead) ~= "number" or type(zFeet) ~= "number" then hideESP(e); continue end
-        if zHead <= 0 or zFeet <= 0 then hideESP(e); continue end
+        local spHead=w2s(headTop); local spFeet=w2s(feetBot)
+        local boxH=math.abs(spFeet.Y-spHead.Y)
+        if boxH<4 then hideESP(e); continue end
+        local boxW=boxH*0.42
+        local tl=Vector2.new(spHead.X-boxW, spHead.Y)
+        local br=Vector2.new(spHead.X+boxW, spFeet.Y)
+        local dist=math.floor((root.Position-Camera.CFrame.Position).Magnitude)
 
-        local boxH = math.abs(spFeet.Y - spHead.Y)
-        if boxH < 4 then hideESP(e); continue end
-        local boxW = boxH * 0.42
-
-        local dist = (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart"))
-                     and (LocalPlayer.Character.HumanoidRootPart.Position - root.Position).Magnitude
-                     or 100
-
-        -- Box
-        e.box.Visible     = true
-        e.box.Color       = col
-        e.box.Size        = Vector2.new(boxW*2, boxH)
-        e.box.Position    = Vector2.new(spHead.X - boxW, spHead.Y)
-        e.box.Transparency= 0
-
-        -- HP bar (left of box, 3px wide)
-        local hpH  = boxH * (hp/100)
-        local barX = spHead.X - boxW - 5
-        e.hpBg.Visible  = true
-        e.hpBg.Size     = Vector2.new(3, boxH)
-        e.hpBg.Position = Vector2.new(barX, spHead.Y)
-        e.hp.Visible    = true
-        e.hp.Color      = Color3.fromRGB(
-            math.floor(255*(1-hp/100)),
-            math.floor(255*(hp/100)), 0
-        )
-        e.hp.Size       = Vector2.new(3, hpH)
-        e.hp.Position   = Vector2.new(barX, spHead.Y + boxH - hpH)
-
-        -- Name
-        e.name.Visible  = true
-        e.name.Color    = col
-        e.name.Text     = pl.Name .. " | " .. math.floor(dist) .. "m"
-        e.name.Position = Vector2.new(spHead.X, spHead.Y - 16)
-
-        -- Head circle (distance-scaled: large close, small far)
-        local hcR = math.clamp(1400 / math.max(dist, 1), 2, 10)
-        local hsp = w2s(head.Position)
-        e.hcirc.Visible  = true
-        e.hcirc.Color    = col
-        e.hcirc.Radius   = hcR
-        e.hcirc.Position = hsp
-    end
-end)
-
--- ================================================================
--- BULLET TRACER HOOK  (hook ServerBullet remote fire call)
--- ================================================================
--- We hook via getgc: find the u250 (spawnBullet) function that calls
--- ServerBullet:FireServer(pos, dir, ...) and intercept origin/dir
--- Alternative approach: hook mouse click to spawn tracer from muzzle
--- to target. This is more reliable than hooking the remote itself.
-local mouseButton1 = Enum.UserInputType.MouseButton1
-UserInputSvc.InputBegan:Connect(function(inp, gp)
-    if gp then return end
-    if inp.UserInputType ~= mouseButton1 then return end
-    if not CFG.BulletTracer then return end
-    if not CFG.Enabled then return end
-
-    task.delay(0.02, function()
-        local from = getMuzzlePos()
-        local to
-        -- try to use silent aim target
-        if cachedTargetPos then
-            to = cachedTargetPos
+        if CFG.ShowBox then
+            drawBox(e,tl,br,col)
+            if CFG.ShowHP then drawHP(e,tl,br,hp)
+            else e.hpBg.Visible=false; e.hpBar.Visible=false end
+            if CFG.ShowName then
+                e.name.Visible=true; e.name.Position=Vector2.new(spHead.X,tl.Y-15)
+                e.name.Text=pl.Name; e.name.Color=col
+            else e.name.Visible=false end
+            if CFG.ShowDist then
+                e.dist.Visible=true; e.dist.Position=Vector2.new(spHead.X,br.Y+3)
+                e.dist.Text=dist.."m"
+            else e.dist.Visible=false end
+            if CFG.ShowState then
+                local st=getState(char,hum)
+                if st~="" then
+                    e.state.Visible=true; e.state.Text=st
+                    e.state.Position=Vector2.new(spHead.X,br.Y+14)
+                else e.state.Visible=false end
+            else e.state.Visible=false end
         else
-            -- fallback: raycast from camera
-            local ray = Camera:ScreenPointToRay(
-                Camera.ViewportSize.X/2,
-                Camera.ViewportSize.Y/2
-            )
-            local result = workspace:Raycast(ray.Origin, ray.Direction*2000,
-                RaycastParams.new())
-            to = result and result.Position or (ray.Origin + ray.Direction*300)
+            for _,l in ipairs(e.box) do l.Visible=false end
+            e.hpBg.Visible=false; e.hpBar.Visible=false
+            e.name.Visible=false; e.dist.Visible=false; e.state.Visible=false
         end
-        spawnTracer(from, to)
-    end)
-end)
 
--- also hook regular shooting (non-silentaim) for tracer
-UserInputSvc.InputBegan:Connect(function(inp, gp)
-    if gp or not CFG.BulletTracer then return end
-    if inp.UserInputType ~= mouseButton1 then return end
-
-    -- vanilla tracer (no silent aim): camera center ray
-    if not CFG.Enabled then
-        task.delay(0.02, function()
-            local from = getMuzzlePos()
-            local ray  = Camera:ScreenPointToRay(
-                Camera.ViewportSize.X/2,
-                Camera.ViewportSize.Y/2
-            )
-            local result = workspace:Raycast(ray.Origin, ray.Direction*2000, RaycastParams.new())
-            local to = result and result.Position or (ray.Origin + ray.Direction*500)
-            spawnTracer(from, to)
-        end)
-    end
-end)
-
--- ================================================================
--- SWASTIKA ESP MARKER  (distance-scaled)
--- ================================================================
-local swastikaPool = {}
-local function getSwastika(pl)
-    if not swastikaPool[pl] then
-        local lines = {}
-        -- 12 segments for swastika: 2 arms (horizontal+vertical) + 4 bent ends each = 12 lines
-        for i=1,12 do
-            lines[i] = newDraw("Line",{
-                Visible=false, Thickness=2,
-                Color=Color3.fromRGB(255,50,50)
-            })
-        end
-        swastikaPool[pl] = lines
-    end
-    return swastikaPool[pl]
-end
-
-local function hideSwastika(lines)
-    for _,l in ipairs(lines) do l.Visible=false end
-end
-
-local function drawSwastika(cx, cy, s)
-    -- s = half-size in pixels
-    -- A swastika: center cross + 4 bent ends
-    -- Returns array of {from, to} pairs (12 segments)
-    local segs = {
-        -- horizontal bar
-        {Vector2.new(cx-s, cy), Vector2.new(cx+s, cy)},
-        -- vertical bar
-        {Vector2.new(cx, cy-s), Vector2.new(cx, cy+s)},
-        -- top arm turns right
-        {Vector2.new(cx, cy-s), Vector2.new(cx+s*0.5, cy-s)},
-        -- right arm turns down
-        {Vector2.new(cx+s, cy), Vector2.new(cx+s, cy+s*0.5)},
-        -- bottom arm turns left
-        {Vector2.new(cx, cy+s), Vector2.new(cx-s*0.5, cy+s)},
-        -- left arm turns up
-        {Vector2.new(cx-s, cy), Vector2.new(cx-s, cy-s*0.5)},
-        -- extended bends (to make it look like a swastika, not a plus)
-        {Vector2.new(cx+s*0.5, cy-s), Vector2.new(cx+s*0.5, cy-s*0.5)},
-        {Vector2.new(cx+s, cy+s*0.5), Vector2.new(cx+s*0.5, cy+s*0.5)},
-        {Vector2.new(cx-s*0.5, cy+s), Vector2.new(cx-s*0.5, cy+s*0.5)},
-        {Vector2.new(cx-s, cy-s*0.5), Vector2.new(cx-s*0.5, cy-s*0.5)},
-        -- fill center
-        {Vector2.new(cx-s*0.15, cy-s*0.15), Vector2.new(cx+s*0.15, cy+s*0.15)},
-        {Vector2.new(cx-s*0.15, cy+s*0.15), Vector2.new(cx+s*0.15, cy-s*0.15)},
-    }
-    return segs
-end
-
-RunService.RenderStepped:Connect(function()
-    for _,pl in ipairs(Players:GetPlayers()) do
-        if pl == LocalPlayer then continue end
-        local lines = getSwastika(pl)
-        if not CFG.ESP then hideSwastika(lines); continue end
-
-        local char = pl.Character
-        if not char then hideSwastika(lines); continue end
-
-        local head = char:FindFirstChild("Head")
-        if not head then hideSwastika(lines); continue end
-
-        local sp, vis, z = w2s(head.Position + Vector3.new(0, 2.2, 0))
-        if not vis or type(z) ~= "number" or z <= 0 then hideSwastika(lines); continue end
-
-        local dist = (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart"))
-                     and (LocalPlayer.Character.HumanoidRootPart.Position - head.Position).Magnitude
-                     or 100
-        local s = math.clamp(4000 / math.max(dist, 1), 14, 42)
-
-        local segs = drawSwastika(sp.X, sp.Y, s)
-        for i,seg in ipairs(segs) do
-            lines[i].Visible = true
-            lines[i].From    = seg[1]
-            lines[i].To      = seg[2]
-        end
-    end
-end)
-
-Players.PlayerRemoving:Connect(function(pl)
-    local lines = swastikaPool[pl]
-    if lines then
-        for _,l in ipairs(lines) do pcall(function() l:Remove() end) end
-        swastikaPool[pl] = nil
-    end
-end)
-
--- ================================================================
--- HIT DETECTION (for HitSound)
--- ================================================================
--- Hook via Atirar if available, else fallback mouse
-local function onHit()
-    playHitSound()
-end
-
--- We use a lightweight damage detect: watch for hit markers
--- The cleanest approach is hooking Atirar remote's OnClientEvent to detect server confirm
--- but that's server→client. Instead we watch humanoid health changes of target.
-local watchedConnections = {}
-local function watchTargetHealth(pl)
-    for _,c in pairs(watchedConnections) do c:Disconnect() end
-    watchedConnections = {}
-    if not pl then return end
-    local char = pl.Character
-    if not char then return end
-    local hum  = char:FindFirstChildOfClass("Humanoid")
-    if not hum then return end
-    local lastHp = hum.Health
-    watchedConnections[1] = hum:GetPropertyChangedSignal("Health"):Connect(function()
-        local newHp = hum.Health
-        if newHp < lastHp then
-            onHit()
-        end
-        lastHp = newHp
-    end)
-end
-
-RunService.Heartbeat:Connect(function()
-    if cachedTarget ~= nil then
-        if not watchedConnections[1] or not watchedConnections[1].Connected then
-            watchTargetHealth(cachedTarget)
-        end
-    end
-end)
-
--- ================================================================
--- EXPLOIT UI  (RCtrl to toggle)
--- ================================================================
-local exploitUI = nil
-local exploitOpen = false
-
-local function safeFireServer(remote, ...)
-    if remote then
-        pcall(function() remote:FireServer(...) end)
-    else
-        notify("Exploit","Remote not found – may need to be in a vehicle/weapon")
-    end
-end
-
-local function buildExploitUI()
-    if exploitUI then exploitUI:Destroy() end
-
-    local sg = Instance.new("ScreenGui")
-    sg.Name             = "ExploitUI_SA"
-    sg.ResetOnSpawn     = false
-    sg.IgnoreGuiInset   = true
-    sg.ZIndexBehavior   = Enum.ZIndexBehavior.Sibling
-    sg.Parent           = LocalPlayer.PlayerGui
-
-    -- Main frame
-    local frame = Instance.new("Frame")
-    frame.Size            = UDim2.new(0, 340, 0, 520)
-    frame.Position        = UDim2.new(0.5,-170,0.5,-260)
-    frame.BackgroundColor3= Color3.fromRGB(14,14,14)
-    frame.BorderSizePixel = 0
-    frame.Active          = true
-    frame.Draggable       = true
-    frame.Parent          = sg
-
-    local corner = Instance.new("UICorner",frame); corner.CornerRadius = UDim.new(0,8)
-
-    -- Title bar
-    local title = Instance.new("TextLabel")
-    title.Size              = UDim2.new(1,0,0,32)
-    title.BackgroundColor3  = Color3.fromRGB(30,30,30)
-    title.TextColor3        = Color3.fromRGB(255,80,80)
-    title.Text              = "⚡  ExploitKit  [RCtrl close]"
-    title.Font              = Enum.Font.GothamBold
-    title.TextSize          = 14
-    title.BorderSizePixel   = 0
-    title.Parent            = frame
-    local tc = Instance.new("UICorner",title); tc.CornerRadius = UDim.new(0,8)
-
-    -- Scroll container
-    local scroll = Instance.new("ScrollingFrame")
-    scroll.Size                  = UDim2.new(1,-10,1,-42)
-    scroll.Position              = UDim2.new(0,5,0,37)
-    scroll.BackgroundTransparency= 1
-    scroll.ScrollBarThickness    = 4
-    scroll.CanvasSize            = UDim2.new(0,0,0,0)
-    scroll.AutomaticCanvasSize   = Enum.AutomaticSize.Y
-    scroll.Parent                = frame
-
-    local layout = Instance.new("UIListLayout",scroll)
-    layout.SortOrder        = Enum.SortOrder.LayoutOrder
-    layout.Padding          = UDim.new(0,4)
-
-    local pad = Instance.new("UIPadding",scroll)
-    pad.PaddingLeft  = UDim.new(0,4)
-    pad.PaddingRight = UDim.new(0,4)
-
-    local function makeSection(name)
-        local lbl = Instance.new("TextLabel")
-        lbl.Size              = UDim2.new(1,0,0,20)
-        lbl.BackgroundColor3  = Color3.fromRGB(35,35,35)
-        lbl.TextColor3        = Color3.fromRGB(180,180,180)
-        lbl.Text              = "── " .. name .. " ──"
-        lbl.Font              = Enum.Font.GothamBold
-        lbl.TextSize          = 12
-        lbl.BorderSizePixel   = 0
-        lbl.Parent            = scroll
-        local c = Instance.new("UICorner",lbl); c.CornerRadius=UDim.new(0,4)
-    end
-
-    local btnCount = 0
-    local function makeBtn(label, fn)
-        btnCount = btnCount + 1
-        local btn = Instance.new("TextButton")
-        btn.Size              = UDim2.new(1,0,0,30)
-        btn.BackgroundColor3  = Color3.fromRGB(28,28,28)
-        btn.TextColor3        = Color3.fromRGB(220,220,220)
-        btn.Text              = label
-        btn.Font              = Enum.Font.Gotham
-        btn.TextSize          = 13
-        btn.BorderSizePixel   = 0
-        btn.LayoutOrder       = btnCount
-        btn.Parent            = scroll
-        local c = Instance.new("UICorner",btn); c.CornerRadius=UDim.new(0,5)
-
-        btn.MouseEnter:Connect(function()
-            btn.BackgroundColor3 = Color3.fromRGB(50,20,20)
-            btn.TextColor3       = Color3.fromRGB(255,100,100)
-        end)
-        btn.MouseLeave:Connect(function()
-            btn.BackgroundColor3 = Color3.fromRGB(28,28,28)
-            btn.TextColor3       = Color3.fromRGB(220,220,220)
-        end)
-        btn.MouseButton1Click:Connect(function()
-            pcall(fn)
-        end)
-    end
-
-    -- ═══════════════════════════════════════════════
-    -- SECTION: Helicopters & Planes
-    -- ═══════════════════════════════════════════════
-    makeSection("🚁 Helicopters / Planes")
-
-    -- Crash ALL helicopters: ReliableHeliEvent(heliModel, "crashExplode")
-    makeBtn("💥 Crash All Helicopters", function()
-        local done = 0
-        for _,obj in ipairs(workspace:GetDescendants()) do
-            if obj:IsA("Model") and obj:FindFirstChild("Required")
-               and obj.Required:FindFirstChild("Engine") then
-                safeFireServer(R.ReliableHeli, obj, "crashExplode")
-                done = done + 1
-                task.wait(0.05)
-            end
-        end
-        notify("Crash Helis", "Sent crashExplode to "..done.." helis")
-    end)
-
-    -- Crash ALL planes (same event, same args – planes use same CrashModule)
-    makeBtn("✈️ Crash All Planes", function()
-        local done = 0
-        for _,obj in ipairs(workspace:GetDescendants()) do
-            if obj:IsA("Model") and obj:FindFirstChild("Hitbox") then
-                -- plane models have Hitbox directly, heli models also but check Engine
-                local hasEngine = obj:FindFirstChild("Required")
-                                  and obj.Required:FindFirstChild("Engine")
-                if not hasEngine then
-                    -- likely a plane - try anyway
-                    safeFireServer(R.ReliableHeli, obj, "crashExplode")
-                    done = done + 1
-                    task.wait(0.05)
-                end
-            end
-        end
-        notify("Crash Planes", "Sent to "..done.." models")
-    end)
-
-    -- Max damage spam on all helis
-    makeBtn("🔥 Heli Damage Spam (all)", function()
-        task.spawn(function()
-            for i=1,10 do
-                for _,obj in ipairs(workspace:GetDescendants()) do
-                    if obj:IsA("Model") and obj:FindFirstChild("Required")
-                       and obj.Required:FindFirstChild("Engine") then
-                        safeFireServer(R.ReliableHeli, obj, "crashDamage", 9999)
-                    end
-                end
-                task.wait(0.1)
-            end
-            notify("Heli Damage","Done")
-        end)
-    end)
-
-    -- Trigger FlareEvent on all helis (makes them spam flares)
-    makeBtn("🌟 Heli Flare Spam (all)", function()
-        local done = 0
-        for _,obj in ipairs(workspace:GetDescendants()) do
-            if obj:IsA("Model") then
-                local net = obj:FindFirstChild("Networking")
-                if net then
-                    local flare = net:FindFirstChild("FlareEvent")
-                    if flare and flare:IsA("RemoteEvent") then
-                        pcall(function() flare:FireServer() end)
-                        done = done + 1
-                        task.wait(0.05)
-                    end
-                end
-            end
-        end
-        notify("Flare Spam", done.." helis flared")
-    end)
-
-    -- ═══════════════════════════════════════════════
-    -- SECTION: Ground Vehicles
-    -- ═══════════════════════════════════════════════
-    makeSection("🚗 Ground Vehicles")
-
-    -- Damage all VehicleSeat occupants by finding their heli-style Networking
-    makeBtn("💣 Damage All Vehicles", function()
-        local done = 0
-        for _,obj in ipairs(workspace:GetDescendants()) do
-            if obj:IsA("Model") then
-                local net = obj:FindFirstChild("Networking")
-                if net then
-                    local dmg = net:FindFirstChild("DamageEvent")
-                    if dmg and dmg:IsA("RemoteEvent") then
-                        pcall(function() dmg:FireServer(9999) end)
-                        done = done + 1
-                        task.wait(0.05)
-                    end
-                end
-            end
-        end
-        notify("Vehicle Damage", done.." vehicles targeted")
-    end)
-
-    -- TankFireFX spam – makes tank fire FX play for all tanks
-    makeBtn("🔫 Tank FireFX Spam", function()
-        if R.TankFireFX then
-            for i=1,15 do
-                safeFireServer(R.TankFireFX)
-                task.wait(0.1)
-            end
+        if CFG.ShowSkeleton and hp>0 then
+            drawSkeleton(e,char,col)
         else
-            -- find from ACS events
-            local evs = game:GetService("ReplicatedStorage"):FindFirstChild("ACS_Engine")
-            local ev  = evs and evs:FindFirstChild("Events")
-            local tff = ev and ev:FindFirstChild("TankFireFX")
-            if tff then
-                for i=1,15 do pcall(function() tff:FireServer() end) task.wait(0.1) end
-                notify("TankFireFX","Spammed")
-            else
-                notify("TankFireFX","Remote not found")
-            end
-        end
-    end)
-
-    -- ═══════════════════════════════════════════════
-    -- SECTION: Player Troll
-    -- ═══════════════════════════════════════════════
-    makeSection("😈 Player Troll")
-
-    -- SVFlash ALL players (flashbang every enemy)
-    -- SVFlash(tool, bool) - bool=true means flash on
-    makeBtn("🔦 SVFlash All Enemies", function()
-        local char  = LocalPlayer.Character
-        local tool  = char and char:FindFirstChildOfClass("Tool")
-        for _,pl in ipairs(Players:GetPlayers()) do
-            if pl == LocalPlayer then continue end
-            if isTeammate(pl) then continue end
-            safeFireServer(R.SVFlash, tool, true)
-            task.wait(0.05)
-        end
-        notify("SVFlash","Flashed all enemies")
-    end)
-
-    -- Collapse ALL enemies (MedSys.Collapse)
-    makeBtn("🏥 Collapse All Enemies", function()
-        local done = 0
-        for _,pl in ipairs(Players:GetPlayers()) do
-            if pl==LocalPlayer then continue end
-            if isTeammate(pl) then continue end
-            safeFireServer(R.Collapse)
-            done = done+1
-            task.wait(0.05)
-        end
-        notify("Collapse","Sent to "..done.." players")
-    end)
-
-    -- Force Surrender animation on all
-    makeBtn("🏳️ Surrender All Enemies", function()
-        local done = 0
-        for _,pl in ipairs(Players:GetPlayers()) do
-            if pl==LocalPlayer then continue end
-            if isTeammate(pl) then continue end
-            safeFireServer(R.Surrender)
-            done = done+1
-            task.wait(0.05)
-        end
-        notify("Surrender","Sent to "..done)
-    end)
-
-    -- HeadRot Spam: send random CFrame to HeadRot to snap everyone's necks
-    makeBtn("🔄 HeadRot Spam (all)", function()
-        task.spawn(function()
-            for i=1,20 do
-                local cf = CFrame.Angles(
-                    math.random(-3,3)*0.5,
-                    math.random(-3,3)*0.5,
-                    math.rad(math.random(-180,180))
-                )
-                safeFireServer(R.HeadRot, cf)
-                task.wait(0.08)
-            end
-            notify("HeadRot","Done")
-        end)
-    end)
-
-    -- Stop Grapple (for players using grapple hook)
-    makeBtn("🪝 Stop Grapple (all)", function()
-        for i=1,5 do
-            safeFireServer(R.StopGrappling)
-            task.wait(0.1)
-        end
-        notify("StopGrapple","Fired x5")
-    end)
-
-    -- Grenade Cookoff spam on local tool
-    makeBtn("💣 Grenade Cookoff Spam", function()
-        local char = LocalPlayer.Character
-        local tool = char and char:FindFirstChildOfClass("Tool")
-        if not tool then notify("GrenadeCookoff","No tool equipped"); return end
-        task.spawn(function()
-            for i=1,10 do
-                safeFireServer(R.GrenadeCookoff, tool.Name)
-                task.wait(0.1)
-            end
-            notify("GrenadeCookoff","Spammed x10")
-        end)
-    end)
-
-    -- Spot all enemies (shows them on radar)
-    makeBtn("📡 Spot All Enemies", function()
-        if not R.SpotPlayer then
-            notify("SpotPlayer","Remote not found")
-            return
-        end
-        local done = 0
-        for _,pl in ipairs(Players:GetPlayers()) do
-            if pl==LocalPlayer then continue end
-            if isTeammate(pl) then continue end
-            pcall(function() R.SpotPlayer:FireServer(pl) end)
-            done = done+1
-            task.wait(0.05)
-        end
-        notify("Spot","Spotted "..done.." enemies")
-    end)
-
-    -- EditKillConditions: set InAir=true for all (makes them take fall damage logic)
-    makeBtn("🪂 Force InAir State All", function()
-        safeFireServer(R.EditKillCond, "InAir", true)
-        notify("InAir","Fired")
-    end)
-
-    -- ═══════════════════════════════════════════════
-    -- SECTION: Server / World
-    -- ═══════════════════════════════════════════════
-    makeSection("🌐 Server / World")
-
-    -- CollectCash (Tycoon mode)
-    makeBtn("💰 Collect Cash (Tycoon)", function()
-        if R.CollectCash then
-            pcall(function() R.CollectCash:FireServer() end)
-            notify("CollectCash","Fired")
-        else
-            local e = game:GetService("ReplicatedStorage"):FindFirstChild("CollectCashEvent")
-            if e then
-                pcall(function() e:FireServer() end)
-                notify("CollectCash","Fired (direct)")
-            else
-                notify("CollectCash","Remote not found")
-            end
-        end
-    end)
-
-    -- NVG toggle spam (flashbang effect via NVG)
-    makeBtn("🌙 NVG Spam", function()
-        task.spawn(function()
-            for i=1,10 do
-                safeFireServer(R.NVG, i%2==0)
-                task.wait(0.15)
-            end
-            notify("NVG Spam","Done")
-        end)
-    end)
-
-    -- KillMe (GroundWar minigame)
-    makeBtn("💀 Kill Myself (Minigame)", function()
-        safeFireServer(R.KillMe)
-        notify("KillMe","Fired")
-    end)
-
-    -- Minigame state resend (can desync server state)
-    makeBtn("🔁 Minigame State Resend", function()
-        if R.MinigameEvent then
-            pcall(function() R.MinigameEvent:FireServer("StateResend") end)
-            notify("MinigameEvent","StateResend fired")
-        else
-            notify("MinigameEvent","Not found")
-        end
-    end)
-
-    exploitUI = sg
-end
-
--- ================================================================
--- KEYBINDS
--- ================================================================
-local function b(v) return v and "ON" or "OFF" end
-
-UserInputSvc.InputBegan:Connect(function(inp, gp)
-    if gp then return end
-    local k = inp.KeyCode
-
-    if k == Enum.KeyCode.RightAlt then
-        CFG.Enabled = not CFG.Enabled
-        notify("SilentAim", b(CFG.Enabled))
-
-    elseif k == Enum.KeyCode.F2 then
-        CFG.TeamCheck = not CFG.TeamCheck
-        notify("TeamCheck", b(CFG.TeamCheck))
-
-    elseif k == Enum.KeyCode.F3 then
-        CFG.ESP = not CFG.ESP
-        if not CFG.ESP then
-            for _,pl in ipairs(Players:GetPlayers()) do
-                hideESP(getESP(pl))
-            end
-        end
-        notify("ESP", b(CFG.ESP))
-
-    elseif k == Enum.KeyCode.F4 then
-        CFG.FFViewModel = not CFG.FFViewModel
-        applyFF(CFG.FFViewModel)
-        notify("FF Viewmodel", b(CFG.FFViewModel))
-
-    elseif k == Enum.KeyCode.F5 then
-        CFG.InfAmmo = not CFG.InfAmmo
-        if CFG.InfAmmo then refreshGunRefs() end
-        notify("InfAmmo", b(CFG.InfAmmo))
-
-    elseif k == Enum.KeyCode.F6 then
-        CFG.FullAuto = not CFG.FullAuto
-        if CFG.FullAuto then
-            refreshGunRefs()
-            if u7Ref then
-                u7Ref.FireModes      = u7Ref.FireModes or {}
-                u7Ref.FireModes.Auto = true
-                u7Ref.ShootType      = 3
-                u7Ref.ShootRate      = 99999
-            end
-        else
-            if u7Ref then
-                u7Ref.ShootType = u7Ref._origST or 1
-                u7Ref.ShootRate = u7Ref._origSR or 700
-                if u7Ref.FireModes then
-                    u7Ref.FireModes.Auto = false
-                end
-            end
-        end
-        notify("FullAuto", b(CFG.FullAuto))
-
-    elseif k == Enum.KeyCode.F7 then
-        CFG.ShowAimLine = not CFG.ShowAimLine
-        notify("AimLine", b(CFG.ShowAimLine))
-
-    elseif k == Enum.KeyCode.F8 then
-        CFG.BulletTracer = not CFG.BulletTracer
-        if not CFG.BulletTracer then
-            for _,tr in ipairs(tracers) do pcall(function() tr.line:Remove() end) end
-            tracers = {}
-        end
-        notify("BulletTracer", b(CFG.BulletTracer))
-
-    elseif k == Enum.KeyCode.RightControl then
-        exploitOpen = not exploitOpen
-        if exploitOpen then
-            buildExploitUI()
-        else
-            if exploitUI then exploitUI:Destroy(); exploitUI=nil end
+            for _,l in ipairs(e.skel) do l.Visible=false end
+            e.headCircle.Visible=false
         end
     end
 end)
 
 -- ================================================================
--- STATUS HUD
+-- INIT
 -- ================================================================
-local statusHUD = newDraw("Text",{
-    Visible=true, Size=13, Font=2,
-    Color=Color3.fromRGB(255,255,255),
-    Outline=true, OutlineColor=Color3.fromRGB(0,0,0),
-    Position=Vector2.new(10,40),
-})
-
-RunService.RenderStepped:Connect(function()
-    statusHUD.Text = string.format(
-        "[SilentAim v2]  Aim:%s  ESP:%s  FF:%s  InfAmmo:%s  FullAuto:%s  Tracer:%s",
-        b(CFG.Enabled), b(CFG.ESP), b(CFG.FFViewModel),
-        b(CFG.InfAmmo), b(CFG.FullAuto), b(CFG.BulletTracer)
-    )
+task.spawn(function()
+    task.wait(1.5)
+    hookShootModule()
+    hookNamecall()
+    task.delay(0.5, refreshGunRefs)
+    print("[SA v13] Init complete")
+    notify("SilentAim v13","Loaded! RCtrl = Troll UI")
 end)
-
-notify("SilentAim v2","Loaded — RCtrl=ExploitUI | RAlt=Aim | F3=ESP | F5=InfAmmo | F6=FullAuto | F8=Tracer")
